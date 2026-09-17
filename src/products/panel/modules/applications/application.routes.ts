@@ -66,8 +66,27 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(400).send({ error: "validation_error" });
     try {
       const team = teamFrom(request);
+      const data = await getApplicationDetails(
+        params.data.applicationId,
+        team.id,
+      );
+      const user = (request as FastifyRequest & { sessionUser: SessionUser })
+        .sessionUser;
+      if (!user.isPlatformAdmin) {
+        const customerData: Record<string, unknown> = { ...data };
+        delete customerData.nodeId;
+        delete customerData.nodeName;
+        delete customerData.nodeStatus;
+        delete customerData.internalPort;
+        customerData.processes = data.processes.map((process) => {
+          const customerProcess: Record<string, unknown> = { ...process };
+          delete customerProcess.internalPort;
+          return customerProcess;
+        });
+        return { data: customerData, meta: { team } };
+      }
       return {
-        data: await getApplicationDetails(params.data.applicationId, team.id),
+        data,
         meta: { team },
       };
     } catch (error) {
@@ -90,9 +109,16 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
         return reply.status(403).send({ error: "team_write_required" });
       const user = (request as FastifyRequest & { sessionUser: SessionUser })
         .sessionUser;
-      return reply
-        .status(201)
-        .send({ data: await createApplication(result.data, team, user) });
+      const created = await createApplication(result.data, team, user);
+      if (user.isPlatformAdmin)
+        return reply.status(201).send({ data: created });
+      const customerData: Record<string, unknown> = { ...created };
+      delete customerData.nodeId;
+      delete customerData.internalPort;
+      customerData.processes = created.processes.map(
+        ({ internalPort: _internalPort, ...process }) => process,
+      );
+      return reply.status(201).send({ data: customerData });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "application_creation_failed";

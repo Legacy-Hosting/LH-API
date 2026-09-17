@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  canManageNodes,
   createNodeBody,
   nodeSetup,
 } from "../src/products/panel/modules/nodes/node.routes.js";
@@ -62,4 +63,9 @@ test("node setup includes a copyable standalone installer command", () => {
   assert.ok(setup.installCommand.includes(`--node-id '${nodeId}'`));
   assert.ok(setup.installCommand.includes(`--token '${token}'`));
   assert.equal(setup.environment.LH_COMMAND_POLL_INTERVAL_MS, "2000");
+});
+
+test("node administration is reserved for platform administrators", () => {
+  assert.equal(canManageNodes({ isPlatformAdmin: true }), true);
+  assert.equal(canManageNodes({ isPlatformAdmin: false }), false);
 });

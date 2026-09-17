@@ -30,6 +30,7 @@ export async function inspectRepository(
   teamId: string,
   fullName: string,
   branch: string,
+  requireStartCommand = true,
 ) {
   const [rows] = await database().query<RepositoryRow[]>(
     `SELECT i.external_account_id AS installationId,r.external_resource_id AS repositoryId
@@ -99,7 +100,8 @@ export async function inspectRepository(
     );
     if (entrypoint) start = { command: "node", args: [entrypoint] };
   }
-  if (!start) throw new Error("start_command_not_detected");
+  if (!start && requireStartCommand)
+    throw new Error("start_command_not_detected");
 
   const framework = dependencies.next
     ? "nextjs"

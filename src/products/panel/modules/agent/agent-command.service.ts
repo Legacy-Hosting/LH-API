@@ -39,6 +39,30 @@ type CommandRow = RowDataPacket & {
   rootDomain: string | null;
 };
 
+type ProcessRow = RowDataPacket & {
+  id: string;
+  name: string;
+  processName: string;
+  type: "web" | "api" | "worker" | "custom";
+  workingDirectory: string;
+  executable: string;
+  arguments: string | string[];
+  internalPort: number | null;
+  primary: number;
+  public: number;
+  routes: string | string[];
+  enabled: number;
+  startOrder: number;
+  instances: number;
+  restartDelayMs: number;
+  inheritEnvironment: number;
+  healthPath: string | null;
+  hostVariable: string | null;
+  portVariable: string | null;
+  hostname: string | null;
+  rootDomain: string | null;
+};
+
 function json<T>(value: string | T | null): T | null {
   if (typeof value !== "string") return value;
   try {
@@ -136,11 +160,16 @@ export async function claimAgentCommand(nodeId: string) {
     const [rows] = await connection.query<CommandRow[]>(
       `SELECT BIN_TO_UUID(c.id) AS id,c.command_type AS commandType,c.payload,
               BIN_TO_UUID(c.application_id) AS applicationId,BIN_TO_UUID(a.team_id) AS teamId,
-              a.storage_path AS storagePath,a.pm2_process_name AS processName,a.internal_port AS internalPort,
+              a.storage_path AS storagePath,a.pm2_process_name AS processName,
+              COALESCE(p.internal_port,a.internal_port) AS internalPort,
               a.repository_full_name AS repository,a.repository_branch AS branch,a.detected_runtime AS runtime,
               d.hostname,d.root_domain AS rootDomain
        FROM node_commands c LEFT JOIN applications a ON a.id=c.application_id
-       LEFT JOIN domains d ON d.id=a.domain_id
+       LEFT JOIN application_processes p
+         ON p.id=UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(c.payload,'$.processId')))
+       LEFT JOIN domains d ON d.id=COALESCE(
+         UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(c.payload,'$.domainId'))),p.domain_id,a.domain_id
+       )
        WHERE c.node_id=UUID_TO_BIN(?) AND c.status='queued' AND c.attempts<3
        ORDER BY c.created_at LIMIT 1 FOR UPDATE SKIP LOCKED`,
       [nodeId],
@@ -171,25 +200,92 @@ export async function claimAgentCommand(nodeId: string) {
   }
   if (!command) return null;
 
+  let processes: ProcessRow[] = [];
+  let persistentPaths: { path: string; type: "file" | "directory" }[] = [];
+  let hostnames: string[] = [];
+  if (command.applicationId) {
+    const [rows] = await database().query<ProcessRow[]>(
+      `SELECT BIN_TO_UUID(p.id) AS id,p.name,p.pm2_process_name AS processName,
+              p.process_type AS type,p.working_directory AS workingDirectory,
+              p.executable,p.arguments,p.internal_port AS internalPort,
+              p.is_primary AS primary,p.is_public AS public,p.routes,p.enabled,
+              p.start_order AS startOrder,p.instances,p.restart_delay_ms AS restartDelayMs,
+              p.inherit_environment AS inheritEnvironment,p.health_path AS healthPath,
+              p.host_variable AS hostVariable,p.port_variable AS portVariable,
+              d.hostname,d.root_domain AS rootDomain
+       FROM application_processes p LEFT JOIN domains d ON d.id=p.domain_id
+       WHERE p.application_id=UUID_TO_BIN(?) ORDER BY p.is_primary DESC,p.created_at`,
+      [command.applicationId],
+    );
+    processes = rows;
+    const [paths] = await database().query<
+      (RowDataPacket & {
+        path: string;
+        type: "file" | "directory";
+      })[]
+    >(
+      `SELECT relative_path AS path,path_type AS type
+       FROM application_persistent_paths WHERE application_id=UUID_TO_BIN(?)
+       ORDER BY relative_path`,
+      [command.applicationId],
+    );
+    persistentPaths = paths;
+    const [domainRows] = await database().query<
+      (RowDataPacket & { hostname: string })[]
+    >(
+      `SELECT d.hostname FROM application_domains ad
+       JOIN domains d ON d.id=ad.domain_id
+       WHERE ad.application_id=UUID_TO_BIN(?) ORDER BY ad.is_primary DESC,d.hostname`,
+      [command.applicationId],
+    );
+    hostnames = domainRows.map((domain) => domain.hostname);
+  }
+
   const environment: Record<string, string> = {};
+  const generatedEnvironment: Record<string, string> = {};
+  const processEnvironment = new Map<string, Record<string, string>>();
   const needsEnvironment = ["deploy", "start", "restart"].includes(
     command.commandType,
   );
   if (command.applicationId && needsEnvironment) {
     const [variables] = await database().query<
-      (RowDataPacket & { variableKey: string; encryptedValue: Buffer })[]
+      (RowDataPacket & {
+        processName: string;
+        variableKey: string;
+        encryptedValue: Buffer;
+      })[]
     >(
-      `SELECT variable_key AS variableKey,encrypted_value AS encryptedValue
+      `SELECT process_name AS processName,variable_key AS variableKey,encrypted_value AS encryptedValue
        FROM application_environment_variables WHERE application_id=UUID_TO_BIN(?) AND environment='production'`,
       [command.applicationId],
     );
-    for (const variable of variables)
-      environment[variable.variableKey] = decryptSecret(
-        variable.encryptedValue,
-      );
+    for (const variable of variables) {
+      const value = decryptSecret(variable.encryptedValue);
+      if (variable.processName === "*") {
+        environment[variable.variableKey] = value;
+      } else {
+        const scoped = processEnvironment.get(variable.processName) ?? {};
+        scoped[variable.variableKey] = value;
+        processEnvironment.set(variable.processName, scoped);
+      }
+    }
   }
-  if (command.internalPort && needsEnvironment)
-    environment.PORT = String(command.internalPort);
+  if (needsEnvironment) {
+    for (const process of processes) {
+      if (!process.internalPort) continue;
+      const key = process.name.toUpperCase().replace(/[^A-Z0-9]+/g, "_");
+      generatedEnvironment[`LH_PROCESS_${key}_HOST`] = "127.0.0.1";
+      generatedEnvironment[`LH_PROCESS_${key}_PORT`] = String(
+        process.internalPort,
+      );
+      if (process.hostVariable)
+        generatedEnvironment[process.hostVariable] = "127.0.0.1";
+      if (process.portVariable)
+        generatedEnvironment[process.portVariable] = String(
+          process.internalPort,
+        );
+    }
+  }
 
   let github: { token: string; expiresAt: string } | null = null;
   if (
@@ -249,8 +345,37 @@ export async function claimAgentCommand(nodeId: string) {
           branch: command.branch,
           hostname: command.hostname,
           rootDomain: command.rootDomain,
+          hostnames,
           runtime: json<Record<string, unknown>>(command.runtime),
+          processes: processes.map((process) => ({
+            id: process.id,
+            name: process.name,
+            processName: process.processName,
+            type: process.type,
+            workingDirectory: process.workingDirectory,
+            start: {
+              command: process.executable,
+              args: json<string[]>(process.arguments) ?? [],
+            },
+            internalPort: process.internalPort,
+            primary: Boolean(process.primary),
+            public: Boolean(process.public),
+            routes: json<string[]>(process.routes) ?? [],
+            enabled: Boolean(process.enabled),
+            startOrder: Number(process.startOrder),
+            instances: Number(process.instances),
+            restartDelayMs: Number(process.restartDelayMs),
+            inheritEnvironment: Boolean(process.inheritEnvironment),
+            healthPath: process.healthPath,
+            hostVariable: process.hostVariable,
+            portVariable: process.portVariable,
+            environment: processEnvironment.get(process.name) ?? {},
+            hostname: process.hostname,
+            rootDomain: process.rootDomain,
+          })),
+          persistentPaths,
           environment,
+          generatedEnvironment,
           github,
           tls,
         }
@@ -290,7 +415,12 @@ export async function completeAgentCommand(
     `SELECT BIN_TO_UUID(c.id) AS id,c.command_type AS commandType,BIN_TO_UUID(c.application_id) AS applicationId,
             BIN_TO_UUID(c.deployment_id) AS deploymentId,c.payload,BIN_TO_UUID(a.team_id) AS teamId,a.name AS applicationName,
             BIN_TO_UUID(d.id) AS domainId,d.hostname,d.root_domain AS rootDomain,d.provider_record_id AS providerRecordId
-     FROM node_commands c LEFT JOIN applications a ON a.id=c.application_id LEFT JOIN domains d ON d.id=a.domain_id
+     FROM node_commands c LEFT JOIN applications a ON a.id=c.application_id
+     LEFT JOIN application_processes p
+       ON p.id=UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(c.payload,'$.processId')))
+     LEFT JOIN domains d ON d.id=COALESCE(
+       UUID_TO_BIN(JSON_UNQUOTE(JSON_EXTRACT(c.payload,'$.domainId'))),p.domain_id,a.domain_id
+     )
      WHERE c.id=UUID_TO_BIN(?) AND c.node_id=UUID_TO_BIN(?) AND c.status='leased'
        AND c.lease_token_hash=? AND c.lease_expires_at>CURRENT_TIMESTAMP(3) LIMIT 1`,
     [input.commandId, nodeId, tokenHash(input.leaseToken)],
@@ -437,32 +567,46 @@ export async function completeAgentCommand(
     input.succeeded &&
     command.commandType === "delete" &&
     command.teamId &&
-    command.domainId &&
-    command.rootDomain &&
-    command.providerRecordId
+    command.applicationId
   ) {
-    try {
-      await removeCloudflareRecord(
-        command.teamId,
-        command.rootDomain,
-        command.providerRecordId,
-      );
-      await database().execute(
-        `UPDATE domains SET provider_record_id=NULL,status='pending',proxy_status='pending',
-           certificate_renewed_at=NULL,certificate_expires_at=NULL,last_error=NULL WHERE id=UUID_TO_BIN(?)`,
-        [command.domainId],
-      );
-    } catch (error) {
-      await database().execute(
-        "UPDATE domains SET status='error',last_error=? WHERE id=UUID_TO_BIN(?)",
-        [
-          (error instanceof Error
-            ? error.message
-            : "cloudflare_dns_delete_failed"
-          ).slice(0, 4000),
-          command.domainId,
-        ],
-      );
+    const [domains] = await database().query<
+      (RowDataPacket & {
+        id: string;
+        rootDomain: string;
+        providerRecordId: string | null;
+      })[]
+    >(
+      `SELECT BIN_TO_UUID(d.id) AS id,d.root_domain AS rootDomain,
+              d.provider_record_id AS providerRecordId
+       FROM application_domains ad JOIN domains d ON d.id=ad.domain_id
+       WHERE ad.application_id=UUID_TO_BIN(?)`,
+      [command.applicationId],
+    );
+    for (const domain of domains) {
+      if (!domain.providerRecordId) continue;
+      try {
+        await removeCloudflareRecord(
+          command.teamId,
+          domain.rootDomain,
+          domain.providerRecordId,
+        );
+        await database().execute(
+          `UPDATE domains SET provider_record_id=NULL,status='pending',proxy_status='pending',
+             certificate_renewed_at=NULL,certificate_expires_at=NULL,last_error=NULL WHERE id=UUID_TO_BIN(?)`,
+          [domain.id],
+        );
+      } catch (error) {
+        await database().execute(
+          "UPDATE domains SET status='error',last_error=? WHERE id=UUID_TO_BIN(?)",
+          [
+            (error instanceof Error
+              ? error.message
+              : "cloudflare_dns_delete_failed"
+            ).slice(0, 4000),
+            domain.id,
+          ],
+        );
+      }
     }
   }
 }

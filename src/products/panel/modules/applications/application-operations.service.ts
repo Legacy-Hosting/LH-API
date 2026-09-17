@@ -55,7 +55,8 @@ export async function getApplicationDetails(
   const application = applications[0];
   if (!application) throw new Error("application_not_found");
 
-  const [environment, deployments] = await Promise.all([
+  const [environment, deployments, processes, persistentPaths, hostnames] =
+    await Promise.all([
     database().query<
       (RowDataPacket & {
         key: string;
@@ -65,7 +66,7 @@ export async function getApplicationDetails(
     >(
       `SELECT variable_key AS \`key\`,is_secret AS secret,updated_at AS updatedAt
        FROM application_environment_variables
-       WHERE application_id=UUID_TO_BIN(?) AND environment='production' ORDER BY variable_key`,
+       WHERE application_id=UUID_TO_BIN(?) AND environment='production' AND process_name='*' ORDER BY variable_key`,
       [applicationId],
     ),
     database().query<
@@ -89,6 +90,36 @@ export async function getApplicationDetails(
        WHERE d.application_id=UUID_TO_BIN(?) ORDER BY d.created_at DESC LIMIT 100`,
       [applicationId],
     ),
+    database().query<RowDataPacket[]>(
+      `SELECT BIN_TO_UUID(p.id) AS id,p.name,p.process_type AS type,
+              p.working_directory AS workingDirectory,p.executable,p.arguments,
+              p.internal_port AS internalPort,p.is_primary AS primary,p.is_public AS public,
+              p.routes,p.enabled,p.start_order AS startOrder,p.instances,
+              p.restart_delay_ms AS restartDelayMs,p.inherit_environment AS inheritEnvironment,
+              p.health_path AS healthPath,d.hostname,
+              s.process_status AS status,s.cpu_percent AS cpuPercent,
+              s.memory_bytes AS memoryBytes,s.restart_count AS restartCount,
+              s.recorded_at AS recordedAt
+       FROM application_processes p LEFT JOIN domains d ON d.id=p.domain_id
+       LEFT JOIN pm2_process_snapshots s ON s.id=(
+         SELECT latest.id FROM pm2_process_snapshots latest
+         WHERE latest.node_id=p.node_id AND latest.process_name=p.pm2_process_name
+         ORDER BY latest.recorded_at DESC LIMIT 1
+       )
+       WHERE p.application_id=UUID_TO_BIN(?) ORDER BY p.start_order,p.created_at`,
+      [applicationId],
+    ),
+    database().query<RowDataPacket[]>(
+      `SELECT relative_path AS path,path_type AS type
+       FROM application_persistent_paths WHERE application_id=UUID_TO_BIN(?) ORDER BY relative_path`,
+      [applicationId],
+    ),
+    database().query<RowDataPacket[]>(
+      `SELECT d.hostname,ad.is_primary AS primary
+       FROM application_domains ad JOIN domains d ON d.id=ad.domain_id
+       WHERE ad.application_id=UUID_TO_BIN(?) ORDER BY ad.is_primary DESC,d.hostname`,
+      [applicationId],
+    ),
   ]);
 
   return {
@@ -100,6 +131,20 @@ export async function getApplicationDetails(
       secret: Boolean(variable.secret),
     })),
     deployments: deployments[0],
+    processes: processes[0].map((process) => ({
+      ...process,
+      arguments: parseJson<string[]>(process.arguments) ?? [],
+      routes: parseJson<string[]>(process.routes) ?? [],
+      primary: Boolean(process.primary),
+      public: Boolean(process.public),
+      enabled: Boolean(process.enabled),
+      inheritEnvironment: Boolean(process.inheritEnvironment),
+    })),
+    persistentPaths: persistentPaths[0],
+    hostnames: hostnames[0].map((item) => ({
+      ...item,
+      primary: Boolean(item.primary),
+    })),
   };
 }
 

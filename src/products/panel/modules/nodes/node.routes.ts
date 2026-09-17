@@ -67,8 +67,8 @@ function userFrom(request: FastifyRequest) {
   return (request as FastifyRequest & { sessionUser: SessionUser }).sessionUser;
 }
 
-function canManageNodes(role: string) {
-  return role === "owner" || role === "administrator";
+export function canManageNodes(user: Pick<SessionUser, "isPlatformAdmin">) {
+  return user.isPlatformAdmin;
 }
 
 export function nodeSetup(nodeId: string, token: string) {
@@ -90,8 +90,28 @@ export function nodeSetup(nodeId: string, token: string) {
 }
 
 export const nodeRoutes: FastifyPluginAsync = async (app) => {
-  app.get("/nodes", async (request) => {
-    const team = teamFrom(request);
+  app.get("/application-targets", async () => {
+    const [nodes] = await database().query<
+      (RowDataPacket & {
+        id: string;
+        region: string | null;
+      })[]
+    >(
+      `SELECT BIN_TO_UUID(id) AS id,region
+       FROM nodes WHERE status='online' ORDER BY region,name`,
+    );
+    return {
+      data: nodes.map((node) => ({
+        id: node.id,
+        region: node.region ?? "Legacy Hosting network",
+      })),
+    };
+  });
+
+  app.get("/nodes", async (request, reply) => {
+    const user = userFrom(request);
+    if (!canManageNodes(user))
+      return reply.status(403).send({ error: "platform_admin_required" });
     const [nodes] = await database().query<
       (RowDataPacket & {
         id: string;
@@ -123,10 +143,9 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
               m.memory_used_percent AS memory,m.disk_used_percent AS disk
        FROM nodes n
        LEFT JOIN node_metrics m ON m.id=(SELECT nm.id FROM node_metrics nm WHERE nm.node_id=n.id ORDER BY nm.recorded_at DESC LIMIT 1)
-       WHERE n.team_id=UUID_TO_BIN(?) ORDER BY n.name`,
-      [team.id],
+       ORDER BY n.name`,
     );
-    return { data: nodes, meta: { team } };
+    return { data: nodes };
   });
 
   app.post("/nodes", async (request, reply) => {
@@ -136,10 +155,9 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
         .status(400)
         .send({ error: "validation_error", details: body.error.flatten() });
     const team = teamFrom(request);
-    if (!canManageNodes(team.role))
-      return reply.status(403).send({ error: "team_admin_required" });
-
     const user = userFrom(request);
+    if (!canManageNodes(user))
+      return reply.status(403).send({ error: "platform_admin_required" });
     const nodeId = randomUUID();
     const token = randomToken(32);
     const connection = await database().getConnection();
@@ -215,9 +233,9 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
     const body = updateNodeBody.safeParse(request.body);
     if (!params.success || !body.success)
       return reply.status(400).send({ error: "validation_error" });
-    const team = teamFrom(request);
-    if (!canManageNodes(team.role))
-      return reply.status(403).send({ error: "team_admin_required" });
+    const user = userFrom(request);
+    if (!canManageNodes(user))
+      return reply.status(403).send({ error: "platform_admin_required" });
 
     const fields: string[] = [];
     const values: (string | null)[] = [];
@@ -241,8 +259,8 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
       }
     }
     const [result] = await database().execute(
-      `UPDATE nodes SET ${fields.join(",")} WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?)`,
-      [...values, params.data.nodeId, team.id],
+      `UPDATE nodes SET ${fields.join(",")} WHERE id=UUID_TO_BIN(?)`,
+      [...values, params.data.nodeId],
     );
     if (!(result as ResultSetHeader).affectedRows)
       return reply.status(404).send({ error: "node_not_found" });
@@ -253,15 +271,15 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
     const params = nodeParams.safeParse(request.params);
     if (!params.success)
       return reply.status(400).send({ error: "validation_error" });
-    const team = teamFrom(request);
-    if (!canManageNodes(team.role))
-      return reply.status(403).send({ error: "team_admin_required" });
+    const user = userFrom(request);
+    if (!canManageNodes(user))
+      return reply.status(403).send({ error: "platform_admin_required" });
     const token = randomToken(32);
     const [result] = await database().execute(
       `UPDATE node_agent_credentials c JOIN nodes n ON n.id=c.node_id
        SET c.authentication_key=?,c.created_at=CURRENT_TIMESTAMP(3),c.last_used_at=NULL,c.revoked_at=NULL
-       WHERE c.node_id=UUID_TO_BIN(?) AND n.team_id=UUID_TO_BIN(?)`,
-      [tokenHash(token), params.data.nodeId, team.id],
+       WHERE c.node_id=UUID_TO_BIN(?)`,
+      [tokenHash(token), params.data.nodeId],
     );
     if (!(result as ResultSetHeader).affectedRows)
       return reply.status(404).send({ error: "node_not_found" });
@@ -272,18 +290,18 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
     const params = nodeParams.safeParse(request.params);
     if (!params.success)
       return reply.status(400).send({ error: "validation_error" });
-    const team = teamFrom(request);
-    if (!canManageNodes(team.role))
-      return reply.status(403).send({ error: "team_admin_required" });
+    const user = userFrom(request);
+    if (!canManageNodes(user))
+      return reply.status(403).send({ error: "platform_admin_required" });
     const [applications] = await database().query<RowDataPacket[]>(
-      "SELECT 1 FROM applications WHERE node_id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) LIMIT 1",
-      [params.data.nodeId, team.id],
+      "SELECT 1 FROM applications WHERE node_id=UUID_TO_BIN(?) AND deleted_at IS NULL LIMIT 1",
+      [params.data.nodeId],
     );
     if (applications[0])
       return reply.status(409).send({ error: "node_has_applications" });
     const [result] = await database().execute(
-      "DELETE FROM nodes WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?)",
-      [params.data.nodeId, team.id],
+      "DELETE FROM nodes WHERE id=UUID_TO_BIN(?)",
+      [params.data.nodeId],
     );
     if (!(result as ResultSetHeader).affectedRows)
       return reply.status(404).send({ error: "node_not_found" });

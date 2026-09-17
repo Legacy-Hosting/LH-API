@@ -1,7 +1,8 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { database } from "../../../../core/database/mysql.js";
+import type { SessionUser } from "../../../../shared/modules/auth/auth.types.js";
 import { teamFrom } from "../../../../shared/modules/teams/team.context.js";
 import { encryptSecret } from "../../../../shared/security/secrets.js";
 
@@ -78,6 +79,10 @@ function canWrite(role: string) {
   return canManage(role) || role === "developer";
 }
 
+function userFrom(request: FastifyRequest) {
+  return (request as FastifyRequest & { sessionUser: SessionUser }).sessionUser;
+}
+
 function jsonArray(value: string | string[] | null) {
   if (Array.isArray(value)) return value;
   if (!value) return [];
@@ -108,13 +113,11 @@ function gb(value: string | number | null) {
 export const monitoringRoutes: FastifyPluginAsync = async (app) => {
   app.get("/monitoring/summary", async (request) => {
     const team = teamFrom(request);
-    const [alerts, nodes, applications, checks] = await Promise.all([
+    const user = userFrom(request);
+    const [alerts, applications, checks] = await Promise.all([
       database().query<(RowDataPacket & { total: number })[]>(
-        "SELECT COUNT(*) AS total FROM monitoring_alerts WHERE team_id=UUID_TO_BIN(?) AND active=TRUE",
-        [team.id],
-      ),
-      database().query<(RowDataPacket & { total: number })[]>(
-        "SELECT COUNT(*) AS total FROM nodes WHERE team_id=UUID_TO_BIN(?) AND status='offline'",
+        `SELECT COUNT(*) AS total FROM monitoring_alerts
+         WHERE team_id=UUID_TO_BIN(?) AND active=TRUE${user.isPlatformAdmin ? "" : " AND resource_type<>'node'"}`,
         [team.id],
       ),
       database().query<(RowDataPacket & { total: number })[]>(
@@ -129,10 +132,17 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
         [team.id],
       ),
     ]);
+    let offlineNodes = 0;
+    if (user.isPlatformAdmin) {
+      const [nodes] = await database().query<
+        (RowDataPacket & { total: number })[]
+      >("SELECT COUNT(*) AS total FROM nodes WHERE status='offline'");
+      offlineNodes = Number(nodes[0]?.total ?? 0);
+    }
     return {
       data: {
         activeAlerts: Number(alerts[0][0]?.total ?? 0),
-        offlineNodes: Number(nodes[0][0]?.total ?? 0),
+        offlineNodes,
         failedApplications: Number(applications[0][0]?.total ?? 0),
         unhealthyChecks: Number(checks[0][0]?.total ?? 0),
       },
@@ -304,6 +314,7 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/monitoring/applications", async (request) => {
     const team = teamFrom(request);
+    const user = userFrom(request);
     const [rows] = await database().query<
       (RowDataPacket & Record<string, string | number | Date | null>)[]
     >(
@@ -340,7 +351,7 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
         id: row.id,
         name: row.name,
         hostname: row.hostname,
-        nodeName: row.nodeName,
+        nodeName: user.isPlatformAdmin ? row.nodeName : undefined,
         health: {
           enabled: Boolean(row.healthEnabled), path: row.healthPath,
           intervalSeconds: Number(row.healthIntervalSeconds), timeoutMs: Number(row.healthTimeoutMs),
@@ -422,6 +433,8 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
     const team = teamFrom(request);
     const configuration = rangeConfiguration[query.data.range];
     if (query.data.scope === "node") {
+      if (!userFrom(request).isPlatformAdmin)
+        return reply.status(403).send({ error: "platform_admin_required" });
       const [rows] = await database().query<RowDataPacket[]>(
         `SELECT FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(m.recorded_at)/?)*?) AS recordedAt,
                 AVG(m.load_1) AS load1,AVG(m.memory_used_percent) AS memoryPercent,
@@ -429,10 +442,10 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
                 MAX(m.network_received_bytes) AS networkReceivedBytes,
                 MAX(m.network_sent_bytes) AS networkSentBytes
          FROM node_metrics m JOIN nodes n ON n.id=m.node_id
-         WHERE n.team_id=UUID_TO_BIN(?) AND n.id=UUID_TO_BIN(?)
+         WHERE n.id=UUID_TO_BIN(?)
            AND m.recorded_at>=UTC_TIMESTAMP()-INTERVAL ${configuration.interval}
          GROUP BY FLOOR(UNIX_TIMESTAMP(m.recorded_at)/?) ORDER BY recordedAt`,
-        [configuration.bucket, configuration.bucket, team.id, query.data.resourceId, configuration.bucket],
+        [configuration.bucket, configuration.bucket, query.data.resourceId, configuration.bucket],
       );
       return { data: { scope: "node", range: query.data.range, points: rows } };
     }
@@ -463,12 +476,14 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/monitoring/alerts", async (request) => {
     const team = teamFrom(request);
+    const user = userFrom(request);
     const [rows] = await database().query<RowDataPacket[]>(
       `SELECT BIN_TO_UUID(id) AS id,resource_type AS resourceType,BIN_TO_UUID(resource_id) AS resourceId,
               alert_key AS alertKey,event_type AS eventType,severity,title,message,active,
               occurrence_count AS occurrenceCount,first_triggered_at AS firstTriggeredAt,
               last_seen_at AS lastSeenAt,resolved_at AS resolvedAt
        FROM monitoring_alerts WHERE team_id=UUID_TO_BIN(?)
+       ${user.isPlatformAdmin ? "" : "AND resource_type<>'node'"}
        ORDER BY active DESC,last_seen_at DESC LIMIT 100`,
       [team.id],
     );

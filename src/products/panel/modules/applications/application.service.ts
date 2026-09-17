@@ -11,6 +11,35 @@ import { provisionCloudflareCname } from "../../../../shared/modules/integration
 
 type CreateApplication = z.infer<typeof createApplicationSchema>;
 type NodeRow = RowDataPacket & { id: string; cnameTarget: string };
+type ZoneRow = RowDataPacket & { name: string };
+
+const FIRST_APPLICATION_PORT = 3000;
+const LAST_APPLICATION_PORT = 3999;
+
+export function allocateApplicationPorts(
+  processTypes: string[],
+  usedPorts: Iterable<number>,
+) {
+  const used = new Set([...usedPorts].map(Number));
+  let candidate = FIRST_APPLICATION_PORT;
+  return processTypes.map((type) => {
+    if (type !== "web" && type !== "api") return null;
+    while (candidate <= LAST_APPLICATION_PORT && used.has(candidate))
+      candidate += 1;
+    if (candidate > LAST_APPLICATION_PORT)
+      throw new Error("node_port_range_exhausted");
+    const allocated = candidate;
+    used.add(allocated);
+    candidate += 1;
+    return allocated;
+  });
+}
+
+function zoneForHostname(hostname: string, zones: string[]) {
+  return zones.find(
+    (zone) => hostname === zone || hostname.endsWith(`.${zone}`),
+  );
+}
 
 function bytes(value: number | string | null) {
   if (value === null) return "—";
@@ -87,7 +116,7 @@ export async function replaceApplicationEnvironment(
   try {
     await connection.beginTransaction();
     await connection.execute(
-      "DELETE FROM application_environment_variables WHERE application_id=UUID_TO_BIN(?) AND environment='production'",
+      "DELETE FROM application_environment_variables WHERE application_id=UUID_TO_BIN(?) AND environment='production' AND process_name='*'",
       [applicationId],
     );
     for (const [key, value] of Object.entries(environment)) {
@@ -136,7 +165,7 @@ export async function deleteApplicationEnvironmentVariable(
     `DELETE ev FROM application_environment_variables ev
      JOIN applications a ON a.id=ev.application_id
      WHERE ev.application_id=UUID_TO_BIN(?) AND a.team_id=UUID_TO_BIN(?) AND a.deleted_at IS NULL
-       AND ev.environment='production' AND ev.variable_key=?`,
+       AND ev.environment='production' AND ev.process_name='*' AND ev.variable_key=?`,
     [applicationId, teamId, key],
   );
   return result.affectedRows > 0;
@@ -232,41 +261,136 @@ export async function createApplication(
   }
 
   const [nodes] = await database().query<NodeRow[]>(
-    "SELECT BIN_TO_UUID(id) AS id,cname_target AS cnameTarget FROM nodes WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) LIMIT 1",
-    [input.nodeId, team.id],
+    "SELECT BIN_TO_UUID(id) AS id,cname_target AS cnameTarget FROM nodes WHERE id=UUID_TO_BIN(?) AND status='online' LIMIT 1",
+    [input.nodeId],
   );
   const node = nodes[0];
   if (!node) throw new Error("node_not_found");
-  const detectedRuntime = input.repository
-    ? await inspectRepository(team.id, input.repository, input.branch)
+  const [connectedZones] = await database().query<ZoneRow[]>(
+    `SELECT r.display_name AS name
+     FROM integration_resources r JOIN integrations i ON i.id=r.integration_id
+     WHERE i.team_id=UUID_TO_BIN(?) AND i.provider='cloudflare' AND i.disconnected_at IS NULL
+       AND r.resource_type='zone' AND r.enabled=TRUE
+     ORDER BY CHAR_LENGTH(r.display_name) DESC`,
+    [team.id],
+  );
+  const zoneNames = connectedZones.map((zone) => zone.name.toLowerCase());
+  if (!zoneNames.includes(input.rootDomain))
+    throw new Error("cloudflare_zone_not_connected");
+  const inspectedRuntime = input.repository
+    ? await inspectRepository(
+        team.id,
+        input.repository,
+        input.branch,
+        input.processes.length === 0,
+      )
+    : null;
+  const detectedRuntime = inspectedRuntime
+    ? {
+        ...inspectedRuntime,
+        install: input.installCommand ?? inspectedRuntime.install,
+        build:
+          input.buildCommand === undefined
+            ? inspectedRuntime.build
+            : input.buildCommand,
+        checks: input.checkCommands,
+      }
     : null;
 
   const applicationId = randomUUID();
   const domainId = randomUUID();
   const deploymentId = input.repository ? randomUUID() : null;
   const storagePath = `/home/${input.rootDomain}/${input.domain}`;
-  const pm2ProcessName = `${team.slug}-${input.name}`.slice(0, 120);
+  const requestedProcesses = input.processes.length
+    ? input.processes
+    : [
+        {
+          name: "web",
+          type: "web" as const,
+          workingDirectory: ".",
+          executable: detectedRuntime?.start?.command ?? "npm",
+          args: detectedRuntime?.start?.args ?? ["start"],
+          primary: true,
+          public: true,
+          routes: ["/"],
+          hostname: undefined,
+          enabled: true,
+          startOrder: 0,
+          instances: 1,
+          restartDelayMs: 1000,
+          inheritEnvironment: true,
+          healthPath: "/health",
+          hostVariable: undefined,
+          portVariable: undefined,
+          environment: {},
+        },
+      ];
+  const domains = new Map<string, { id: string; rootDomain: string }>([
+    [input.domain, { id: domainId, rootDomain: input.rootDomain }],
+  ]);
+  for (const hostname of [
+    ...input.additionalHostnames,
+    ...requestedProcesses.flatMap((process) =>
+      process.hostname ? [process.hostname] : [],
+    ),
+  ]) {
+    if (domains.has(hostname)) continue;
+    const rootDomain = zoneForHostname(hostname, zoneNames);
+    if (!rootDomain) throw new Error("cloudflare_zone_not_connected");
+    domains.set(hostname, { id: randomUUID(), rootDomain });
+  }
+  const sharedHostnames = new Set([input.domain, ...input.additionalHostnames]);
+  const processes = requestedProcesses.map((process) => {
+    const suffix = input.processes.length ? `-${process.name}` : "";
+    const prefix = `${team.slug}-${input.name}`.slice(
+      0,
+      120 - suffix.length,
+    );
+    return {
+      ...process,
+      configuredHostname: process.hostname ?? null,
+      id: randomUUID(),
+      pm2ProcessName: `${prefix}${suffix}`,
+      domainId: process.public
+        ? domains.get(process.hostname ?? input.domain)?.id ?? domainId
+        : null,
+      hostname: process.primary ? input.domain : process.hostname,
+      internalPort: null as number | null,
+    };
+  });
+  const primaryProcess = processes.find((process) => process.primary);
+  if (!primaryProcess) throw new Error("primary_process_required");
+  const pm2ProcessName = primaryProcess.pm2ProcessName;
   const connection = await database().getConnection();
   let internalPort = 0;
 
   try {
     await connection.beginTransaction();
-    await connection.query(
-      "SELECT id FROM nodes WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) FOR UPDATE",
-      [node.id, team.id],
+    const [lockedNodes] = await connection.query<RowDataPacket[]>(
+      "SELECT id FROM nodes WHERE id=UUID_TO_BIN(?) AND status='online' FOR UPDATE",
+      [node.id],
     );
+    if (!lockedNodes[0]) throw new Error("node_not_found");
     const [usedPorts] = await connection.query<
       (RowDataPacket & { internalPort: number })[]
     >(
-      "SELECT internal_port AS internalPort FROM applications WHERE node_id=UUID_TO_BIN(?) AND deleted_at IS NULL AND internal_port IS NOT NULL",
-      [node.id],
+      `SELECT internal_port AS internalPort FROM applications
+       WHERE node_id=UUID_TO_BIN(?) AND deleted_at IS NULL AND internal_port IS NOT NULL
+       UNION
+       SELECT p.internal_port AS internalPort FROM application_processes p
+       JOIN applications a ON a.id=p.application_id
+       WHERE p.node_id=UUID_TO_BIN(?) AND a.deleted_at IS NULL AND p.internal_port IS NOT NULL`,
+      [node.id, node.id],
     );
-    const used = new Set(usedPorts.map((row) => Number(row.internalPort)));
-    internalPort =
-      Array.from({ length: 1000 }, (_, index) => 3000 + index).find(
-        (port) => !used.has(port),
-      ) ?? 0;
-    if (!internalPort) throw new Error("node_port_range_exhausted");
+    const allocatedPorts = allocateApplicationPorts(
+      processes.map((process) => process.type),
+      usedPorts.map((row) => Number(row.internalPort)),
+    );
+    processes.forEach((process, index) => {
+      process.internalPort = allocatedPorts[index] ?? null;
+    });
+    internalPort = primaryProcess.internalPort ?? 0;
+    if (!internalPort) throw new Error("primary_process_port_required");
     await connection.execute(
       `INSERT INTO domains (id,team_id,hostname,root_domain,record_type,dns_target,proxied,status)
        VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'CNAME',?,TRUE,'pending')`,
@@ -291,10 +415,78 @@ export async function createApplication(
         detectedRuntime ? JSON.stringify(detectedRuntime) : null,
       ],
     );
+    for (const [hostname, domain] of domains) {
+      const additionalDomainId = domain.id;
+      if (additionalDomainId !== domainId) {
+        await connection.execute(
+          `INSERT INTO domains (id,team_id,hostname,root_domain,record_type,dns_target,proxied,status)
+           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'CNAME',?,TRUE,'pending')`,
+          [
+            additionalDomainId,
+            team.id,
+            hostname,
+            domain.rootDomain,
+            node.cnameTarget,
+          ],
+        );
+      }
+      await connection.execute(
+        `INSERT INTO application_domains (application_id,domain_id,is_primary,routing_mode)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)`,
+        [
+          applicationId,
+          additionalDomainId,
+          additionalDomainId === domainId,
+          sharedHostnames.has(hostname) ? "shared" : "dedicated",
+        ],
+      );
+    }
+    for (const process of processes) {
+      await connection.execute(
+        `INSERT INTO application_processes
+         (id,application_id,node_id,domain_id,name,pm2_process_name,process_type,
+          working_directory,executable,arguments,internal_port,is_primary,is_public,routes,
+          enabled,start_order,instances,restart_delay_ms,inherit_environment,health_path,
+          host_variable,port_variable)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          process.id,
+          applicationId,
+          node.id,
+          process.domainId,
+          process.name,
+          process.pm2ProcessName,
+          process.type,
+          process.workingDirectory,
+          process.executable,
+          JSON.stringify(process.args),
+          process.internalPort,
+          process.primary,
+          process.public,
+          JSON.stringify(process.routes),
+          process.enabled,
+          process.startOrder,
+          process.instances,
+          process.restartDelayMs,
+          process.inheritEnvironment,
+          process.healthPath ?? null,
+          process.hostVariable ?? null,
+          process.portVariable ?? null,
+        ],
+      );
+      for (const [key, value] of Object.entries(process.environment)) {
+        await connection.execute(
+          `INSERT INTO application_environment_variables
+           (id,application_id,environment,process_name,variable_key,encrypted_value,is_secret)
+           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'production',?,?,?,TRUE)`,
+          [randomUUID(), applicationId, process.name, key, encryptSecret(value)],
+        );
+      }
+    }
     await connection.execute(
-      `INSERT INTO application_health_checks (application_id,next_check_at)
-       VALUES (UUID_TO_BIN(?),CURRENT_TIMESTAMP(3))`,
-      [applicationId],
+      `INSERT INTO application_health_checks (application_id,path,next_check_at)
+       VALUES (UUID_TO_BIN(?),?,CURRENT_TIMESTAMP(3))`,
+      [applicationId, primaryProcess.healthPath ?? "/"],
     );
 
     for (const [key, value] of Object.entries(input.environment)) {
@@ -303,6 +495,13 @@ export async function createApplication(
          (id,application_id,environment,variable_key,encrypted_value,is_secret)
          VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'production',?,?,TRUE)`,
         [randomUUID(), applicationId, key, encryptSecret(value)],
+      );
+    }
+    for (const path of input.persistentPaths) {
+      await connection.execute(
+        `INSERT INTO application_persistent_paths (id,application_id,relative_path,path_type)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)`,
+        [randomUUID(), applicationId, path.path, path.type],
       );
     }
 
@@ -338,6 +537,7 @@ export async function createApplication(
           domain: input.domain,
           nodeId: node.id,
           repository: input.repository ?? null,
+          processes: processes.map((process) => process.name),
         }),
       ],
     );
@@ -353,54 +553,69 @@ export async function createApplication(
   let dnsError: string | null = null;
   let proxyStatus: "configuring" | "error" = "configuring";
   let proxyError: string | null = null;
-  try {
-    const dns = await provisionCloudflareCname({
-      teamId: team.id,
-      rootDomain: input.rootDomain,
-      hostname: input.domain,
-      target: node.cnameTarget,
-      proxied: true,
-    });
-    await database().execute(
-      `UPDATE domains SET integration_id=UUID_TO_BIN(?),provider_record_id=?,status='active',last_error=NULL
-       WHERE id=UUID_TO_BIN(?)`,
-      [dns.integrationId, dns.recordId, domainId],
-    );
-    const proxyConnection = await database().getConnection();
+  const domainConfigurations = [...domains].map(([hostname, domain]) => ({
+    id: domain.id,
+    hostname,
+    rootDomain: domain.rootDomain,
+    routes: processes
+      .filter(
+        (process) =>
+          process.public &&
+          process.internalPort &&
+          (process.configuredHostname === hostname ||
+            (sharedHostnames.has(hostname) && !process.configuredHostname)),
+      )
+      .flatMap((process) =>
+        process.routes.map((prefix) => ({
+          prefix,
+          port: process.internalPort!,
+          processName: process.name,
+        })),
+      ),
+  }));
+  for (const domain of domainConfigurations) {
     try {
-      await proxyConnection.beginTransaction();
-      await proxyConnection.execute(
-        `UPDATE domains SET proxy_status='configuring',last_error=NULL WHERE id=UUID_TO_BIN(?)`,
-        [domainId],
-      );
-      await proxyConnection.execute(
-        `INSERT INTO node_commands (id,node_id,application_id,command_type,payload)
-         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'configure_proxy',JSON_OBJECT())`,
-        [randomUUID(), node.id, applicationId],
-      );
-      await proxyConnection.commit();
-    } catch (error) {
-      await proxyConnection.rollback();
-      proxyStatus = "error";
-      const message =
-        error instanceof Error ? error.message : "proxy_queue_failed";
-      proxyError = message;
+      const dns = await provisionCloudflareCname({
+        teamId: team.id,
+        rootDomain: domain.rootDomain,
+        hostname: domain.hostname,
+        target: node.cnameTarget,
+        proxied: true,
+      });
       await database().execute(
-        "UPDATE domains SET proxy_status='error',last_error=? WHERE id=UUID_TO_BIN(?)",
-        [message.slice(0, 4000), domainId],
+        `UPDATE domains SET integration_id=UUID_TO_BIN(?),provider_record_id=?,status='active',
+           proxy_status='configuring',last_error=NULL WHERE id=UUID_TO_BIN(?)`,
+        [dns.integrationId, dns.recordId, domain.id],
       );
-    } finally {
-      proxyConnection.release();
+      await database().execute(
+        `INSERT INTO node_commands (id,node_id,application_id,command_type,payload)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'configure_proxy',?)`,
+        [
+          randomUUID(),
+          node.id,
+          applicationId,
+          JSON.stringify({
+            domainId: domain.id,
+            hostname: domain.hostname,
+            rootDomain: domain.rootDomain,
+            routes: domain.routes,
+          }),
+        ],
+      );
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "cloudflare_dns_failed";
+      await database().execute(
+        "UPDATE domains SET status='error',proxy_status='error',last_error=? WHERE id=UUID_TO_BIN(?)",
+        [message.slice(0, 4000), domain.id],
+      );
+      if (domain.id === domainId) {
+        dnsStatus = "error";
+        proxyStatus = "error";
+        dnsError = message;
+        proxyError = message;
+      }
     }
-  } catch (error) {
-    dnsStatus = "error";
-    proxyStatus = "error";
-    dnsError = error instanceof Error ? error.message : "cloudflare_dns_failed";
-    proxyError = dnsError;
-    await database().execute(
-      "UPDATE domains SET status='error',proxy_status='error',last_error=? WHERE id=UUID_TO_BIN(?)",
-      [dnsError.slice(0, 4000), domainId],
-    );
   }
 
   return {
@@ -414,6 +629,15 @@ export async function createApplication(
     status: "Pending",
     deploymentId,
     detectedRuntime,
+    processes: processes.map((process) => ({
+      id: process.id,
+      name: process.name,
+      type: process.type,
+      primary: process.primary,
+      hostname: process.hostname ?? null,
+      internalPort: process.internalPort,
+      pm2ProcessName: process.pm2ProcessName,
+    })),
     dns: { status: dnsStatus, error: dnsError },
     proxy: { status: proxyStatus, error: proxyError },
   };
