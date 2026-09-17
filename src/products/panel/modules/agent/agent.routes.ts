@@ -71,6 +71,10 @@ const commandProgressSchema = z.object({
   chunk: z.string().max(65_536),
 });
 
+export function databaseTimestamp(value: string | null) {
+  return value ? new Date(value) : null;
+}
+
 const releaseRoot = resolve(process.cwd(), "..");
 const installerFiles = {
   script: resolve(releaseRoot, "ops", "scripts", "install-node-agent.sh"),
@@ -191,7 +195,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
             process.memoryBytes,
             process.storageBytes,
             process.restartCount,
-            process.startedAt,
+            databaseTimestamp(process.startedAt),
             process.revision,
           ],
         );
