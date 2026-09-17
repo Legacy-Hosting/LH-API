@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../src/app.js";
+import { closeDatabase } from "../src/core/database/mysql.js";
 import { createCsrfToken } from "../src/shared/security/csrf.js";
 
 let app: FastifyInstance;
@@ -12,6 +13,7 @@ before(async () => {
 
 after(async () => {
   await app.close();
+  await closeDatabase();
 });
 
 test("public API metadata and security headers are available", async () => {
