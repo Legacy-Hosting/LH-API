@@ -71,16 +71,19 @@ function canManageNodes(role: string) {
   return role === "owner" || role === "administrator";
 }
 
-function setup(nodeId: string, token: string) {
+export function nodeSetup(nodeId: string, token: string) {
+  const apiUrl = "https://api.legacyhosting.xyz/api/v1";
   return {
     nodeId,
     token,
     environment: {
-      LH_API_URL: "https://api.legacyhosting.xyz/api/v1",
+      LH_API_URL: apiUrl,
       LH_NODE_ID: nodeId,
       LH_AGENT_TOKEN: token,
       LH_HEARTBEAT_INTERVAL_MS: "30000",
+      LH_COMMAND_POLL_INTERVAL_MS: "2000",
     },
+    installCommand: `curl -fsSL '${apiUrl}/agent/install.sh' | sudo bash -s -- --api-url '${apiUrl}' --node-id '${nodeId}' --token '${token}'`,
     warning:
       "The node token is shown once and cannot be recovered. Store it only in the agent environment file.",
   };
@@ -202,7 +205,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
           id: nodeId,
           ...body.data,
           status: "pending",
-          agent: setup(nodeId, token),
+          agent: nodeSetup(nodeId, token),
         },
       });
   });
@@ -262,7 +265,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
     );
     if (!(result as ResultSetHeader).affectedRows)
       return reply.status(404).send({ error: "node_not_found" });
-    return { data: setup(params.data.nodeId, token) };
+    return { data: nodeSetup(params.data.nodeId, token) };
   });
 
   app.delete("/nodes/:nodeId", async (request, reply) => {

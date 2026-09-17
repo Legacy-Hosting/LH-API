@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createNodeBody } from "../src/products/panel/modules/nodes/node.routes.js";
+import {
+  createNodeBody,
+  nodeSetup,
+} from "../src/products/panel/modules/nodes/node.routes.js";
 
 const baseNode = {
   name: "ams3-web-02",
@@ -47,4 +50,16 @@ test("node registration rejects missing and mismatched public IP addresses", () 
     }).success,
     false,
   );
+});
+
+test("node setup includes a copyable standalone installer command", () => {
+  const nodeId = "11111111-1111-4111-8111-111111111111";
+  const token = "abcdefghijklmnopqrstuvwxyzABCDEFGH12345678";
+  const setup = nodeSetup(nodeId, token);
+
+  assert.match(setup.installCommand, /^curl -fsSL 'https:\/\//);
+  assert.match(setup.installCommand, /agent\/install\.sh/);
+  assert.ok(setup.installCommand.includes(`--node-id '${nodeId}'`));
+  assert.ok(setup.installCommand.includes(`--token '${token}'`));
+  assert.equal(setup.environment.LH_COMMAND_POLL_INTERVAL_MS, "2000");
 });

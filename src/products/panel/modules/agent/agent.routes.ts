@@ -1,4 +1,7 @@
-import type { FastifyPluginAsync } from "fastify";
+import { constants, createReadStream } from "node:fs";
+import { access } from "node:fs/promises";
+import { resolve } from "node:path";
+import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { database } from "../../../../core/database/mysql.js";
@@ -68,7 +71,67 @@ const commandProgressSchema = z.object({
   chunk: z.string().max(65_536),
 });
 
+const releaseRoot = resolve(process.cwd(), "..");
+const installerFiles = {
+  script: resolve(releaseRoot, "ops", "scripts", "install-node-agent.sh"),
+  runtime: resolve(
+    releaseRoot,
+    "artifacts",
+    "lh-agent-runtime.tar.gz",
+  ),
+  checksum: resolve(
+    releaseRoot,
+    "artifacts",
+    "lh-agent-runtime.tar.gz.sha256",
+  ),
+};
+
+async function sendInstallerFile(
+  reply: FastifyReply,
+  path: string,
+  contentType: string,
+  filename: string,
+) {
+  try {
+    await access(path, constants.R_OK);
+  } catch {
+    return reply.status(503).send({ error: "agent_installer_unavailable" });
+  }
+  reply
+    .type(contentType)
+    .header("Cache-Control", "no-store")
+    .header("Content-Disposition", `attachment; filename="${filename}"`);
+  return reply.send(createReadStream(path));
+}
+
 export const agentRoutes: FastifyPluginAsync = async (app) => {
+  app.get("/install.sh", async (_request, reply) =>
+    sendInstallerFile(
+      reply,
+      installerFiles.script,
+      "text/x-shellscript; charset=utf-8",
+      "install-node-agent.sh",
+    ),
+  );
+
+  app.get("/runtime.tar.gz", async (_request, reply) =>
+    sendInstallerFile(
+      reply,
+      installerFiles.runtime,
+      "application/gzip",
+      "lh-agent-runtime.tar.gz",
+    ),
+  );
+
+  app.get("/runtime.tar.gz.sha256", async (_request, reply) =>
+    sendInstallerFile(
+      reply,
+      installerFiles.checksum,
+      "text/plain; charset=utf-8",
+      "lh-agent-runtime.tar.gz.sha256",
+    ),
+  );
+
   app.post("/heartbeat", async (request, reply) => {
     const nodeId = await authenticateAgentRequest(request);
     if (!nodeId)

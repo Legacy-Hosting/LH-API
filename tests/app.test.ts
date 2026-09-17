@@ -23,6 +23,17 @@ test("public API metadata and security headers are available", async () => {
   assert.equal(response.headers["x-content-type-options"], "nosniff");
 });
 
+test("the Ubuntu node installer is publicly downloadable", async () => {
+  const response = await app.inject({
+    method: "GET",
+    url: "/api/v1/agent/install.sh",
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers["content-type"] ?? "", /text\/x-shellscript/);
+  assert.match(response.body, /Legacy Hosting node agent installed/);
+});
+
 test("cross-origin browser mutations are rejected before handlers", async () => {
   const response = await app.inject({
     method: "POST",
