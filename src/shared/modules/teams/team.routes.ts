@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
-import type { RowDataPacket } from "mysql2";
+import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { env } from "../../../core/config/env.js";
 import { database } from "../../../core/database/mysql.js";
@@ -17,6 +17,9 @@ const createInvitationBody = z.object({
   email: z.string().trim().email().max(254),
   role: z.enum(["administrator", "developer", "viewer"]).default("viewer"),
   expiresInDays: z.number().int().min(1).max(30).default(7),
+});
+const updateTeamBody = z.object({
+  name: z.string().trim().min(2).max(120),
 });
 const acceptInvitationBody = z.object({ token: z.string().min(20) });
 
@@ -55,6 +58,51 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
       [user.id],
     );
     return { data: teams };
+  });
+
+  app.patch("/:teamId", async (request, reply) => {
+    const params = teamParams.safeParse(request.params);
+    const body = updateTeamBody.safeParse(request.body);
+    if (!params.success || !body.success)
+      return reply.status(400).send({ error: "validation_error" });
+
+    const user = userFrom(request);
+    const access = await membership(user.id, params.data.teamId);
+    if (!access || !canManageTeam(access.role))
+      return reply.status(403).send({ error: "team_admin_required" });
+
+    const connection = await database().getConnection();
+    try {
+      await connection.beginTransaction();
+      const [result] = await connection.execute<ResultSetHeader>(
+        "UPDATE teams SET name=? WHERE id=UUID_TO_BIN(?)",
+        [body.data.name, params.data.teamId],
+      );
+      if (!result.affectedRows) {
+        await connection.rollback();
+        return reply.status(404).send({ error: "team_not_found" });
+      }
+      await connection.execute(
+        `INSERT INTO audit_events (team_id,user_id,product_key,action,resource_type,resource_id,metadata)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'panel','team.updated','team',?,?)`,
+        [
+          params.data.teamId,
+          user.id,
+          params.data.teamId,
+          JSON.stringify({ name: body.data.name }),
+        ],
+      );
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+    return {
+      data: { id: params.data.teamId, name: body.data.name },
+    };
   });
 
   app.get("/:teamId/members", async (request, reply) => {
