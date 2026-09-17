@@ -23,6 +23,7 @@ const schema = z
     .default("true")
     .transform((value) => value === "true"),
   DATABASE_URL: z.string().min(1).optional(),
+  DATABASE_SSL_CA: z.string().min(1).optional(),
   SESSION_COOKIE_DOMAIN: z.string().optional(),
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   WEBAUTHN_RP_NAME: z.string().default("Legacy Hosting"),
@@ -68,6 +69,13 @@ const schema = z
         code: "custom",
         path: ["CREDENTIAL_ENCRYPTION_KEY"],
         message: "CREDENTIAL_ENCRYPTION_KEY is required in production",
+      });
+    }
+    if (value.NODE_ENV === "production" && !value.DATABASE_SSL_CA) {
+      context.addIssue({
+        code: "custom",
+        path: ["DATABASE_SSL_CA"],
+        message: "DATABASE_SSL_CA is required in production",
       });
     }
   });

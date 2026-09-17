@@ -25,6 +25,8 @@ pnpm db:migrate
 pnpm dev
 ```
 
+Production also requires `DATABASE_SSL_CA` to point to DigitalOcean's downloaded CA certificate. The API and migration runner remove client-specific `ssl-mode` URL parameters and establish a verified TLS connection with that CA.
+
 The migration runner applies the numbered SQL files in order, uses a MySQL advisory lock, and rejects previously applied migrations that have been edited.
 
 Panel routes require an authenticated database session. The first account is created with `INITIAL_ADMIN_TOKEN`; later registration follows the database-controlled `open`, `invite_only`, or `closed` mode. Authentication uses WebAuthn/passkeys, including Windows Hello.

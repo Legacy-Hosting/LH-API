@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import mysql from "mysql2/promise";
 import type { RowDataPacket } from "mysql2";
 import { env } from "../config/env.js";
+import { databaseConnectionOptions } from "./connection-options.js";
 
 const LOCK_NAME = "legacy-hosting-schema-migrations";
 
@@ -11,7 +12,7 @@ async function migrate() {
   if (!env.DATABASE_URL) throw new Error("DATABASE_URL is not configured");
 
   const connection = await mysql.createConnection({
-    uri: env.DATABASE_URL,
+    ...databaseConnectionOptions(),
     multipleStatements: true,
   });
 

@@ -1,12 +1,13 @@
 import mysql, { type Pool } from "mysql2/promise";
 import { env } from "../config/env.js";
+import { databaseConnectionOptions } from "./connection-options.js";
 
 let pool: Pool | undefined;
 
 export function database(): Pool {
   if (!env.DATABASE_URL) throw new Error("DATABASE_URL is not configured");
   pool ??= mysql.createPool({
-    uri: env.DATABASE_URL,
+    ...databaseConnectionOptions(),
     connectionLimit: 10,
     enableKeepAlive: true,
     keepAliveInitialDelay: 0,
