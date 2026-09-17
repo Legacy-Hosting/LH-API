@@ -14,7 +14,7 @@ test(
     const [migrations] = await database().query<
       (RowDataPacket & { total: number })[]
     >("SELECT COUNT(*) AS total FROM schema_migrations");
-    assert.equal(Number(migrations[0]?.total), 12);
+    assert.equal(Number(migrations[0]?.total), 13);
 
     const [tables] = await database().query<
       (RowDataPacket & { tableName: string })[]

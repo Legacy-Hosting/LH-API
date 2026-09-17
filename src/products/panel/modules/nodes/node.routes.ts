@@ -18,26 +18,41 @@ const hostname = z
   .regex(
     /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/,
   );
-const ipAddress = z
+const ipv4Address = z
   .string()
   .trim()
-  .refine((value) => isIP(value) !== 0, "Invalid IP address");
-const createNodeBody = z.object({
-  name: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .min(2)
-    .max(80)
-    .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
-  publicIp: ipAddress,
-  privateIp: ipAddress.optional(),
+  .refine((value) => isIP(value) === 4, "Invalid IPv4 address");
+const ipv6Address = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .refine((value) => isIP(value) === 6, "Invalid IPv6 address");
+const nodeNetworkFields = z.object({
+  publicFqdn: hostname,
+  publicIpv4: ipv4Address.optional(),
+  publicIpv6: ipv6Address.optional(),
+  privateFqdn: hostname.optional(),
+  privateIpv4: ipv4Address.optional(),
+  privateIpv6: ipv6Address.optional(),
   cnameTarget: hostname,
   region: z.string().trim().max(80).optional(),
 });
+export const createNodeBody = nodeNetworkFields
+  .extend({
+    name: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .min(2)
+      .max(80)
+      .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+  })
+  .refine((value) => value.publicIpv4 || value.publicIpv6, {
+    message: "At least one public IP address is required",
+    path: ["publicIpv4"],
+  });
 const nodeParams = z.object({ nodeId: z.string().uuid() });
-const updateNodeBody = createNodeBody
-  .pick({ publicIp: true, privateIp: true, cnameTarget: true, region: true })
+const updateNodeBody = nodeNetworkFields
   .partial()
   .refine(
     (value) => Object.keys(value).length > 0,
@@ -74,7 +89,13 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
       (RowDataPacket & {
         id: string;
         name: string;
-        publicIp: string;
+        publicFqdn: string;
+        publicIpv4: string | null;
+        publicIpv6: string | null;
+        privateFqdn: string | null;
+        privateIpv4: string | null;
+        privateIpv6: string | null;
+        publicIp: string | null;
         privateIp: string | null;
         cnameTarget: string;
         region: string | null;
@@ -86,8 +107,11 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
         disk: number | null;
       })[]
     >(
-      `SELECT BIN_TO_UUID(n.id) AS id,n.name,n.public_ip AS publicIp,n.private_ip AS privateIp,
-              n.cname_target AS cnameTarget,n.region,n.status,n.agent_version AS agentVersion,
+      `SELECT BIN_TO_UUID(n.id) AS id,n.name,n.public_fqdn AS publicFqdn,
+              n.public_ip AS publicIpv4,n.public_ipv6 AS publicIpv6,
+              n.private_fqdn AS privateFqdn,n.private_ip AS privateIpv4,n.private_ipv6 AS privateIpv6,
+              n.public_ip AS publicIp,n.private_ip AS privateIp,n.cname_target AS cnameTarget,
+              n.region,n.status,n.agent_version AS agentVersion,
               n.last_heartbeat_at AS lastHeartbeatAt,m.load_1 AS load1,
               m.memory_used_percent AS memory,m.disk_used_percent AS disk
        FROM nodes n
@@ -115,14 +139,19 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
     try {
       await connection.beginTransaction();
       await connection.execute(
-        `INSERT INTO nodes (id,team_id,name,public_ip,private_ip,cname_target,region,status)
-         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,'pending')`,
+        `INSERT INTO nodes
+         (id,team_id,name,public_fqdn,public_ip,public_ipv6,private_fqdn,private_ip,private_ipv6,cname_target,region,status)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,'pending')`,
         [
           nodeId,
           team.id,
           body.data.name,
-          body.data.publicIp,
-          body.data.privateIp ?? null,
+          body.data.publicFqdn,
+          body.data.publicIpv4 ?? null,
+          body.data.publicIpv6 ?? null,
+          body.data.privateFqdn ?? null,
+          body.data.privateIpv4 ?? null,
+          body.data.privateIpv6 ?? null,
           body.data.cnameTarget,
           body.data.region ?? null,
         ],
@@ -140,7 +169,9 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
           nodeId,
           JSON.stringify({
             name: body.data.name,
-            publicIp: body.data.publicIp,
+            publicFqdn: body.data.publicFqdn,
+            publicIpv4: body.data.publicIpv4,
+            publicIpv6: body.data.publicIpv6,
             cnameTarget: body.data.cnameTarget,
           }),
         ],
@@ -184,8 +215,12 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
     const fields: string[] = [];
     const values: (string | null)[] = [];
     const columns = {
-      publicIp: "public_ip",
-      privateIp: "private_ip",
+      publicFqdn: "public_fqdn",
+      publicIpv4: "public_ip",
+      publicIpv6: "public_ipv6",
+      privateFqdn: "private_fqdn",
+      privateIpv4: "private_ip",
+      privateIpv6: "private_ipv6",
       cnameTarget: "cname_target",
       region: "region",
     } as const;

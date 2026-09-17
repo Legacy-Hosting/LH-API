@@ -37,6 +37,8 @@ The supported server baseline and PM2 deployment instructions are documented in 
 
 `LH-Agent` posts signed heartbeats to `POST /api/v1/agent/heartbeat`. Each node has an independent credential; the API stores only its SHA-256-derived authentication key and validates request age plus an HMAC signature before accepting metrics.
 
+Node registration keeps public and private network identities separate. Each node has a public FQDN, optional private FQDN, dedicated IPv4 and IPv6 fields for both networks, and an independent application CNAME target. At least one public IP address is required.
+
 Agent v1 signatures include a one-time UUID nonce persisted in MySQL, preventing a captured signed request from being replayed within the timestamp window. The agent also sends its legacy signature during the rolling upgrade. Keep `ALLOW_LEGACY_AGENT_SIGNATURES=true` only until every node runs agent v1, then set it to `false`.
 
 ## Authentication and secrets
