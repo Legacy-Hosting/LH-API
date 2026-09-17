@@ -57,6 +57,8 @@ https://api.legacyhosting.xyz/api/v1/integrations/cloudflare/callback
 
 Required scopes are `dns.read`, `dns.write`, `zone.read`, `user-details.read`, and `offline_access`. Customer authorizations are stored per team. Application creation selects one of the authorized zones and provisions a proxied CNAME pointing to the selected node's configured CNAME target.
 
+Set `CLOUDFLARE_OAUTH_TOKEN_AUTH_METHOD` to the token endpoint authentication method configured on the Cloudflare client: `client_secret_basic` or `client_secret_post`. New server-side clients should default to `client_secret_basic` unless the client is explicitly configured for POST authentication.
+
 The current private Cloudflare client can only serve accounts allowed by that private client. Promoting it to public is a separate, permanent Cloudflare-side decision.
 
 ## GitHub App

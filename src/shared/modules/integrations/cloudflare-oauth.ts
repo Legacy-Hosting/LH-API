@@ -7,11 +7,39 @@ const endpoints = {
   userInfo: "https://dash.cloudflare.com/oauth2/userinfo",
 } as const;
 
+export type CloudflareTokenAuthMethod =
+  | "client_secret_basic"
+  | "client_secret_post";
+
+export function buildCloudflareTokenRequest(
+  tokenAuthMethod: CloudflareTokenAuthMethod,
+  clientId: string,
+  clientSecret: string,
+  parameters: Record<string, string>,
+) {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/x-www-form-urlencoded",
+    "User-Agent": "Legacy-Hosting-Panel/1.0 (+https://legacyhosting.xyz)",
+  };
+  const body = new URLSearchParams(parameters);
+
+  if (tokenAuthMethod === "client_secret_basic") {
+    headers.Authorization = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString("base64")}`;
+  } else {
+    body.set("client_id", clientId);
+    body.set("client_secret", clientSecret);
+  }
+
+  return { headers, body };
+}
+
 function configuration() {
   const values = {
     clientId: env.CLOUDFLARE_OAUTH_CLIENT_ID,
     clientSecret: env.CLOUDFLARE_OAUTH_CLIENT_SECRET,
     redirectUri: env.CLOUDFLARE_OAUTH_REDIRECT_URI,
+    tokenAuthMethod: env.CLOUDFLARE_OAUTH_TOKEN_AUTH_METHOD,
     scopes: env.CLOUDFLARE_OAUTH_SCOPES,
   };
 
@@ -24,6 +52,32 @@ function configuration() {
     throw new Error("Cloudflare OAuth is not configured");
   }
   return values as Record<keyof typeof values, string>;
+}
+
+async function cloudflareTokenError(
+  response: Response,
+  operation: "exchange" | "refresh",
+) {
+  const ray = response.headers.get("cf-ray");
+  if (response.headers.get("cf-mitigated") === "challenge") {
+    return new Error(
+      `Cloudflare token ${operation} was blocked by an upstream challenge${ray ? ` (Ray ID: ${ray})` : ""}`,
+    );
+  }
+
+  let providerError: string | undefined;
+  try {
+    const payload = (await response.json()) as { error?: unknown };
+    if (typeof payload.error === "string") {
+      providerError = payload.error.replace(/[^a-zA-Z0-9_.-]/g, "").slice(0, 80);
+    }
+  } catch {
+    // The status code still gives a safe error when Cloudflare returns non-JSON.
+  }
+
+  return new Error(
+    `Cloudflare token ${operation} failed with status ${response.status}${providerError ? ` (${providerError})` : ""}`,
+  );
 }
 
 export function cloudflareAuthorizationUrl(state: string) {
@@ -39,23 +93,23 @@ export function cloudflareAuthorizationUrl(state: string) {
 
 export async function exchangeCloudflareCode(code: string) {
   const config = configuration();
-  const response = await fetch(endpoints.token, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
+  const request = buildCloudflareTokenRequest(
+    config.tokenAuthMethod as CloudflareTokenAuthMethod,
+    config.clientId,
+    config.clientSecret,
+    {
       grant_type: "authorization_code",
       code,
       redirect_uri: config.redirectUri,
-    }),
+    },
+  );
+  const response = await fetch(endpoints.token, {
+    method: "POST",
+    ...request,
+    signal: AbortSignal.timeout(15_000),
   });
 
-  if (!response.ok)
-    throw new Error(
-      `Cloudflare token exchange failed with status ${response.status}`,
-    );
+  if (!response.ok) throw await cloudflareTokenError(response, "exchange");
   return response.json() as Promise<{
     access_token: string;
     refresh_token?: string;
@@ -67,22 +121,21 @@ export async function exchangeCloudflareCode(code: string) {
 
 export async function refreshCloudflareAccessToken(refreshToken: string) {
   const config = configuration();
-  const response = await fetch(endpoints.token, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString("base64")}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body: new URLSearchParams({
+  const request = buildCloudflareTokenRequest(
+    config.tokenAuthMethod as CloudflareTokenAuthMethod,
+    config.clientId,
+    config.clientSecret,
+    {
       grant_type: "refresh_token",
       refresh_token: refreshToken,
-    }),
+    },
+  );
+  const response = await fetch(endpoints.token, {
+    method: "POST",
+    ...request,
     signal: AbortSignal.timeout(15_000),
   });
-  if (!response.ok)
-    throw new Error(
-      `Cloudflare token refresh failed with status ${response.status}`,
-    );
+  if (!response.ok) throw await cloudflareTokenError(response, "refresh");
   return response.json() as Promise<{
     access_token: string;
     refresh_token?: string;
