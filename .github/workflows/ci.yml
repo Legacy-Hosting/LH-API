@@ -33,7 +33,7 @@ jobs:
       CSRF_SECRET: ci-only-csrf-secret-with-32-characters
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 12.4.1
       - uses: actions/setup-node@v4
