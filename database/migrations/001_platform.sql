@@ -168,4 +168,4 @@ INSERT INTO products (id, product_key, name) VALUES
   (UUID_TO_BIN(UUID()), 'billing', 'Legacy Hosting Billing');
 
 INSERT INTO platform_settings (setting_key, setting_value) VALUES
-  ('registration', JSON_OBJECT('mode', 'closed', 'emailVerificationRequired', true));
+  ('registration', JSON_OBJECT('mode', 'closed', 'emailVerificationRequired', false));

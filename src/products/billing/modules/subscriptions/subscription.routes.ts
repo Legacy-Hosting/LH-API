@@ -1,5 +1,8 @@
-import type { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync } from "fastify";
 
 export const subscriptionRoutes: FastifyPluginAsync = async (app) => {
-  app.get('/subscriptions', async () => ({ data: [], meta: { module: 'billing/subscriptions' } }))
-}
+  app.get("/subscriptions", async () => ({
+    data: [],
+    meta: { module: "billing/subscriptions" },
+  }));
+};

@@ -1,6 +1,6 @@
 {
   "name": "@legacyhosting/api",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.4.1",
@@ -11,21 +11,30 @@
   },
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "db:migrate": "tsx src/core/database/migrate.ts",
+    "certificates:worker": "tsx src/workers/certificate-renewal.ts",
+    "monitoring:worker": "tsx src/workers/monitoring.ts",
+    "test": "tsx --test tests/*.test.ts",
+    "check:migrations": "tsx --test tests/migrations.test.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@fastify/cors": "latest",
-    "@fastify/helmet": "latest",
-    "dotenv": "latest",
-    "fastify": "latest",
-    "mysql2": "latest",
-    "zod": "latest"
+    "@fastify/cookie": "11.1.2",
+    "@fastify/cors": "11.3.0",
+    "@fastify/helmet": "13.1.1",
+    "@fastify/rate-limit": "11.2.0",
+    "@simplewebauthn/server": "14.0.2",
+    "dotenv": "17.4.2",
+    "fastify": "5.12.4",
+    "fastify-raw-body": "6.0.1",
+    "mysql2": "3.24.4",
+    "zod": "4.6.5"
   },
   "devDependencies": {
-    "@types/node": "latest",
-    "tsx": "latest",
-    "typescript": "latest"
+    "@types/node": "22.20.3",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2"
   }
 }

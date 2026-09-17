@@ -1,6 +1,6 @@
-import type { FastifyPluginAsync } from 'fastify'
+import type { FastifyPluginAsync } from "fastify";
 
 export type ProductModule = {
-  name: string
-  routes: FastifyPluginAsync
-}
+  name: string;
+  routes: FastifyPluginAsync;
+};
