@@ -17,6 +17,7 @@ const hostname = z
   .toLowerCase()
   .regex(
     /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/,
+    "Enter a valid fully qualified domain name",
   );
 const ipv4Address = z
   .string()
@@ -45,7 +46,10 @@ export const createNodeBody = nodeNetworkFields
       .toLowerCase()
       .min(2)
       .max(80)
-      .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+      .regex(
+        /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/,
+        "Use lowercase letters, numbers, and hyphens only",
+      ),
   })
   .refine((value) => value.publicIpv4 || value.publicIpv6, {
     message: "At least one public IP address is required",

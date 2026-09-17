@@ -21,7 +21,19 @@ const createInvitationBody = z.object({
 const updateTeamBody = z.object({
   name: z.string().trim().min(2).max(120),
 });
+export const createTeamBody = updateTeamBody;
 const acceptInvitationBody = z.object({ token: z.string().min(20) });
+
+export function createTeamSlug(name: string, suffix = randomUUID().slice(0, 8)) {
+  const base = name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 71);
+  return `${base || "team"}-${suffix}`;
+}
 
 function userFrom(request: FastifyRequest): SessionUser {
   return (request as FastifyRequest & { sessionUser: SessionUser }).sessionUser;
@@ -58,6 +70,55 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
       [user.id],
     );
     return { data: teams };
+  });
+
+  app.post("/", async (request, reply) => {
+    const body = createTeamBody.safeParse(request.body);
+    if (!body.success)
+      return reply
+        .status(400)
+        .send({ error: "validation_error", details: body.error.flatten() });
+
+    const user = userFrom(request);
+    const teamId = randomUUID();
+    const slug = createTeamSlug(body.data.name);
+    const connection = await database().getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.execute(
+        "INSERT INTO teams (id,name,slug) VALUES (UUID_TO_BIN(?),?,?)",
+        [teamId, body.data.name, slug],
+      );
+      await connection.execute(
+        "INSERT INTO team_members (team_id,user_id,role) VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'owner')",
+        [teamId, user.id],
+      );
+      await connection.execute(
+        `INSERT INTO audit_events (team_id,user_id,product_key,action,resource_type,resource_id,metadata)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'panel','team.created','team',?,?)`,
+        [
+          teamId,
+          user.id,
+          teamId,
+          JSON.stringify({ name: body.data.name, slug }),
+        ],
+      );
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+    return reply.status(201).send({
+      data: {
+        id: teamId,
+        name: body.data.name,
+        slug,
+        role: "owner" as const,
+      },
+    });
   });
 
   app.patch("/:teamId", async (request, reply) => {
