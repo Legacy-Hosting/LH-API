@@ -59,6 +59,8 @@ Required scopes are `dns.read`, `dns.write`, `zone.read`, `user-details.read`, a
 
 Set `CLOUDFLARE_OAUTH_TOKEN_AUTH_METHOD` to the token endpoint authentication method configured on the Cloudflare client: `client_secret_basic` or `client_secret_post`. New server-side clients should default to `client_secret_basic` unless the client is explicitly configured for POST authentication.
 
+Server-side token, refresh, revoke, and user-info requests use `CLOUDFLARE_OAUTH_API_ORIGIN` (default `https://api.cloudflare.com`). Interactive user authorization remains on `https://dash.cloudflare.com`; keeping the two origins separate prevents dashboard bot challenges from blocking backend OAuth requests.
+
 The current private Cloudflare client can only serve accounts allowed by that private client. Promoting it to public is a separate, permanent Cloudflare-side decision.
 
 ## GitHub App

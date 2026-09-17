@@ -2,9 +2,12 @@ import { env } from "../../../core/config/env.js";
 
 const endpoints = {
   authorization: "https://dash.cloudflare.com/oauth2/auth",
-  token: "https://dash.cloudflare.com/oauth2/token",
-  revoke: "https://dash.cloudflare.com/oauth2/revoke",
-  userInfo: "https://dash.cloudflare.com/oauth2/userinfo",
+  token: new URL("/oauth2/token", env.CLOUDFLARE_OAUTH_API_ORIGIN).toString(),
+  revoke: new URL("/oauth2/revoke", env.CLOUDFLARE_OAUTH_API_ORIGIN).toString(),
+  userInfo: new URL(
+    "/oauth2/userinfo",
+    env.CLOUDFLARE_OAUTH_API_ORIGIN,
+  ).toString(),
 } as const;
 
 export type CloudflareTokenAuthMethod =

@@ -34,6 +34,24 @@ test("cross-origin browser mutations are rejected before handlers", async () => 
   assert.equal(response.json().error, "invalid_request_origin");
 });
 
+test("panel preflights allow every API mutation method", async () => {
+  for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+    const response = await app.inject({
+      method: "OPTIONS",
+      url: "/api/v1/auth/admin/registration",
+      headers: {
+        origin: "http://localhost:5173",
+        "access-control-request-method": method,
+        "access-control-request-headers":
+          "content-type,x-csrf-token,x-team-id",
+      },
+    });
+
+    assert.equal(response.statusCode, 204);
+    assert.match(response.headers["access-control-allow-methods"] ?? "", new RegExp(method));
+  }
+});
+
 test("session-bearing mutations require the matching CSRF token", async () => {
   const missing = await app.inject({
     method: "POST",

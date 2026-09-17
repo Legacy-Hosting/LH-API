@@ -1,6 +1,24 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildCloudflareTokenRequest } from "../src/shared/modules/integrations/cloudflare-oauth.js";
+import {
+  buildCloudflareTokenRequest,
+  cloudflareOAuthEndpoints,
+} from "../src/shared/modules/integrations/cloudflare-oauth.js";
+
+test("Cloudflare backend OAuth endpoints use the API origin", () => {
+  assert.equal(
+    cloudflareOAuthEndpoints.authorization,
+    "https://dash.cloudflare.com/oauth2/auth",
+  );
+  assert.equal(
+    cloudflareOAuthEndpoints.token,
+    "https://api.cloudflare.com/oauth2/token",
+  );
+  assert.equal(
+    cloudflareOAuthEndpoints.userInfo,
+    "https://api.cloudflare.com/oauth2/userinfo",
+  );
+});
 
 test("Cloudflare basic token authentication keeps credentials out of the body", () => {
   const request = buildCloudflareTokenRequest(

@@ -40,7 +40,11 @@ export async function buildApp() {
     encoding: false,
     runFirst: true,
   });
-  await app.register(cors, { origin: env.PANEL_ORIGIN, credentials: true });
+  await app.register(cors, {
+    origin: env.PANEL_ORIGIN,
+    credentials: true,
+    methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  });
   app.addHook("preHandler", enforceBrowserRequestSecurity);
 
   app.setErrorHandler((error, request, reply) => {

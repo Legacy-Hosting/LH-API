@@ -35,6 +35,10 @@ const schema = z
   CLOUDFLARE_OAUTH_CLIENT_ID: z.string().min(1).optional(),
   CLOUDFLARE_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
   CLOUDFLARE_OAUTH_REDIRECT_URI: z.string().url().optional(),
+  CLOUDFLARE_OAUTH_API_ORIGIN: z
+    .string()
+    .url()
+    .default("https://api.cloudflare.com"),
   CLOUDFLARE_OAUTH_TOKEN_AUTH_METHOD: z
     .enum(["client_secret_basic", "client_secret_post"])
     .default("client_secret_basic"),
