@@ -27,3 +27,21 @@ test(
     assert.equal(tables.length, 8);
   },
 );
+
+test(
+  "monitoring time buckets work with ONLY_FULL_GROUP_BY",
+  { skip: !process.env.DATABASE_URL },
+  async () => {
+    const [rows] = await database().query<RowDataPacket[]>(
+      `SELECT FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(recorded_at)/?)*?) AS recordedAt,
+              AVG(load_1) AS load1
+       FROM node_metrics
+       WHERE recorded_at>=UTC_TIMESTAMP()-INTERVAL 24 HOUR
+       GROUP BY recordedAt
+       ORDER BY recordedAt`,
+      [300, 300],
+    );
+
+    assert.ok(Array.isArray(rows));
+  },
+);

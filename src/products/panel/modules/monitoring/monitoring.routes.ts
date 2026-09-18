@@ -444,8 +444,8 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
          FROM node_metrics m JOIN nodes n ON n.id=m.node_id
          WHERE n.id=UUID_TO_BIN(?)
            AND m.recorded_at>=UTC_TIMESTAMP()-INTERVAL ${configuration.interval}
-         GROUP BY FLOOR(UNIX_TIMESTAMP(m.recorded_at)/?) ORDER BY recordedAt`,
-        [configuration.bucket, configuration.bucket, query.data.resourceId, configuration.bucket],
+         GROUP BY recordedAt ORDER BY recordedAt`,
+        [configuration.bucket, configuration.bucket, query.data.resourceId],
       );
       return { data: { scope: "node", range: query.data.range, points: rows } };
     }
@@ -458,8 +458,8 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
          FROM application_metrics m JOIN applications a ON a.id=m.application_id
          WHERE a.team_id=UUID_TO_BIN(?) AND a.id=UUID_TO_BIN(?)
            AND m.recorded_at>=UTC_TIMESTAMP()-INTERVAL ${configuration.interval}
-         GROUP BY FLOOR(UNIX_TIMESTAMP(m.recorded_at)/?) ORDER BY recordedAt`,
-        [configuration.bucket, configuration.bucket, team.id, query.data.resourceId, configuration.bucket],
+         GROUP BY recordedAt ORDER BY recordedAt`,
+        [configuration.bucket, configuration.bucket, team.id, query.data.resourceId],
       ),
       database().query<RowDataPacket[]>(
         `SELECT FROM_UNIXTIME(FLOOR(UNIX_TIMESTAMP(h.recorded_at)/?)*?) AS recordedAt,
@@ -467,8 +467,8 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
          FROM application_health_samples h JOIN applications a ON a.id=h.application_id
          WHERE a.team_id=UUID_TO_BIN(?) AND a.id=UUID_TO_BIN(?)
            AND h.recorded_at>=UTC_TIMESTAMP()-INTERVAL ${configuration.interval}
-         GROUP BY FLOOR(UNIX_TIMESTAMP(h.recorded_at)/?) ORDER BY recordedAt`,
-        [configuration.bucket, configuration.bucket, team.id, query.data.resourceId, configuration.bucket],
+         GROUP BY recordedAt ORDER BY recordedAt`,
+        [configuration.bucket, configuration.bucket, team.id, query.data.resourceId],
       ),
     ]);
     return { data: { scope: "application", range: query.data.range, points: metrics[0], health: health[0] } };
