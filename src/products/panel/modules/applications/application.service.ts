@@ -278,12 +278,21 @@ export async function createApplication(
   if (!zoneNames.includes(input.rootDomain))
     throw new Error("cloudflare_zone_not_connected");
   const inspectedRuntime = input.repository
-    ? await inspectRepository(
-        team.id,
-        input.repository,
-        input.branch,
-        input.processes.length === 0,
-      )
+      ? await inspectRepository(
+          team.id,
+          input.repository,
+          input.branch,
+          {
+            requireStartCommand: input.processes.length === 0,
+            manualRuntime:
+              input.processes.length > 0 && input.installCommand
+                ? {
+                    install: input.installCommand,
+                    build: input.buildCommand,
+                  }
+                : undefined,
+          },
+        )
     : null;
   const detectedRuntime = inspectedRuntime
     ? {

@@ -19,6 +19,17 @@ type PackageManifest = {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
 };
+type RuntimeCommand = {
+  command: "npm" | "pnpm" | "yarn" | "bun" | "node";
+  args: string[];
+};
+type RepositoryInspectionOptions = {
+  requireStartCommand?: boolean;
+  manualRuntime?: {
+    install: RuntimeCommand;
+    build?: RuntimeCommand | null;
+  };
+};
 
 function executable(packageManager: string, script: string) {
   if (packageManager === "npm")
@@ -26,11 +37,26 @@ function executable(packageManager: string, script: string) {
   return { command: packageManager, args: [script] };
 }
 
+export function runtimeWithoutRootManifest(
+  manualRuntime?: RepositoryInspectionOptions["manualRuntime"],
+) {
+  if (!manualRuntime) throw new Error("unsupported_repository_runtime");
+  return {
+    kind: "node" as const,
+    framework: "custom",
+    packageManager: manualRuntime.install.command,
+    install: manualRuntime.install,
+    build: manualRuntime.build ?? null,
+    start: null,
+    detectedFrom: "manual_configuration",
+  };
+}
+
 export async function inspectRepository(
   teamId: string,
   fullName: string,
   branch: string,
-  requireStartCommand = true,
+  options: RepositoryInspectionOptions = {},
 ) {
   const [rows] = await database().query<RepositoryRow[]>(
     `SELECT i.external_account_id AS installationId,r.external_resource_id AS repositoryId
@@ -50,7 +76,7 @@ export async function inspectRepository(
   );
   const files = new Set(root.map((item) => item.name));
   if (!files.has("package.json"))
-    throw new Error("unsupported_repository_runtime");
+    return runtimeWithoutRootManifest(options.manualRuntime);
 
   const manifestFile = await githubInstallationRequest<ContentItem>(
     Number(repository.installationId),
@@ -100,7 +126,7 @@ export async function inspectRepository(
     );
     if (entrypoint) start = { command: "node", args: [entrypoint] };
   }
-  if (!start && requireStartCommand)
+  if (!start && (options.requireStartCommand ?? true))
     throw new Error("start_command_not_detected");
 
   const framework = dependencies.next
