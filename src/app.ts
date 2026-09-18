@@ -92,7 +92,7 @@ export async function buildApp() {
   app.get("/health", async () => ({
     status: "ok",
     database: await databaseStatus(),
-    version: "1.0.20",
+    version: "1.0.21",
   }));
   app.get("/api/v1", async () => ({
     name: "Legacy Hosting API",
