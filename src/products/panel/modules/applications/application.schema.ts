@@ -107,6 +107,12 @@ export const updateApplicationSchema = z.object({
   persistentPaths: z.array(persistentPath).max(50),
 });
 
+export const persistentFileWriteSchema = z.object({
+  path: persistentPath.shape.path,
+  content: z.string().min(1).max(65_536),
+  restartProcesses: z.boolean().default(true),
+});
+
 export const createApplicationSchema = z
   .object({
     name: applicationName,

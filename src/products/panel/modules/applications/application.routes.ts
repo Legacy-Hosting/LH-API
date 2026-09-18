@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import {
   createApplicationSchema,
+  persistentFileWriteSchema,
   updateApplicationSchema,
 } from "./application.schema.js";
 import {
@@ -18,6 +19,7 @@ import { z } from "zod";
 import {
   getApplicationCommand,
   getApplicationDetails,
+  queuePersistentFileWrite,
   queueApplicationLogSnapshot,
   queueRollback,
 } from "./application-operations.service.js";
@@ -174,6 +176,46 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: conflict ? "application_name_exists" : message });
     }
   });
+
+  app.post(
+    "/applications/:applicationId/persistent-files",
+    async (request, reply) => {
+      const params = applicationParams.safeParse(request.params);
+      const body = persistentFileWriteSchema.safeParse(request.body);
+      if (!params.success || !body.success)
+        return reply.status(400).send({
+          error: "validation_error",
+          details: body.success ? undefined : body.error.flatten(),
+        });
+      const team = teamFrom(request);
+      if (!canMutate(team.role))
+        return reply.status(403).send({ error: "team_write_required" });
+      const user = (request as FastifyRequest & { sessionUser: SessionUser })
+        .sessionUser;
+      try {
+        return reply.status(202).send({
+          data: await queuePersistentFileWrite(
+            params.data.applicationId,
+            team.id,
+            user,
+            body.data,
+          ),
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : "persistent_file_queue_failed";
+        if (message === "application_not_found")
+          return reply.status(404).send({ error: message });
+        if (message === "persistent_file_not_configured")
+          return reply.status(400).send({ error: message });
+        if (message === "persistent_file_write_in_progress")
+          return reply.status(409).send({ error: message });
+        throw error;
+      }
+    },
+  );
 
   app.put(
     "/applications/:applicationId/environment",

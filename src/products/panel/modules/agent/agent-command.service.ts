@@ -21,7 +21,8 @@ type CommandType =
   | "delete"
   | "configure_proxy"
   | "renew_certificate"
-  | "logs";
+  | "logs"
+  | "write_persistent_file";
 
 type CommandRow = RowDataPacket & {
   id: string;
@@ -244,9 +245,12 @@ export async function claimAgentCommand(nodeId: string) {
   const environment: Record<string, string> = {};
   const generatedEnvironment: Record<string, string> = {};
   const processEnvironment = new Map<string, Record<string, string>>();
-  const needsEnvironment = ["deploy", "start", "restart"].includes(
-    command.commandType,
-  );
+  const needsEnvironment = [
+    "deploy",
+    "start",
+    "restart",
+    "write_persistent_file",
+  ].includes(command.commandType);
   if (command.applicationId && needsEnvironment) {
     const [variables] = await database().query<
       (RowDataPacket & {
@@ -330,11 +334,24 @@ export async function claimAgentCommand(nodeId: string) {
     };
   }
 
+  const deliveredPayload =
+    json<Record<string, unknown>>(command.payload) ?? {};
+  if (command.commandType === "write_persistent_file") {
+    const path = deliveredPayload.path;
+    const encryptedContent = deliveredPayload.encryptedContent;
+    if (typeof path !== "string" || typeof encryptedContent !== "string")
+      throw new Error("Persistent file command payload is invalid");
+    deliveredPayload.content = decryptSecret(
+      Buffer.from(encryptedContent, "base64"),
+    );
+    delete deliveredPayload.encryptedContent;
+  }
+
   return {
     id: command.id,
     type: command.commandType,
     leaseToken,
-    payload: json<Record<string, unknown>>(command.payload) ?? {},
+    payload: deliveredPayload,
     application: command.applicationId
       ? {
           id: command.applicationId,

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { RowDataPacket } from "mysql2";
 import { database } from "../../../../core/database/mysql.js";
 import type { SessionUser } from "../../../../shared/modules/auth/auth.types.js";
+import { encryptSecret } from "../../../../shared/security/secrets.js";
 
 function parseJson<T>(value: string | T | null): T | null {
   if (typeof value !== "string") return value;
@@ -146,6 +147,85 @@ export async function getApplicationDetails(
       primary: Boolean(item.primary),
     })),
   };
+}
+
+export async function queuePersistentFileWrite(
+  applicationId: string,
+  teamId: string,
+  user: SessionUser,
+  input: {
+    path: string;
+    content: string;
+    restartProcesses: boolean;
+  },
+) {
+  const connection = await database().getConnection();
+  const commandId = randomUUID();
+  try {
+    await connection.beginTransaction();
+    const [applications] = await connection.query<
+      (RowDataPacket & { nodeId: string })[]
+    >(
+      `SELECT BIN_TO_UUID(node_id) AS nodeId FROM applications
+       WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND deleted_at IS NULL
+       FOR UPDATE`,
+      [applicationId, teamId],
+    );
+    const application = applications[0];
+    if (!application) throw new Error("application_not_found");
+    const [paths] = await connection.query<RowDataPacket[]>(
+      `SELECT 1 FROM application_persistent_paths
+       WHERE application_id=UUID_TO_BIN(?) AND relative_path=? AND path_type='file'
+       LIMIT 1`,
+      [applicationId, input.path],
+    );
+    if (!paths[0]) throw new Error("persistent_file_not_configured");
+    const [active] = await connection.query<RowDataPacket[]>(
+      `SELECT 1 FROM node_commands
+       WHERE application_id=UUID_TO_BIN(?) AND command_type='write_persistent_file'
+         AND status IN ('queued','leased')
+         AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.path'))=?
+       LIMIT 1`,
+      [applicationId, input.path],
+    );
+    if (active[0]) throw new Error("persistent_file_write_in_progress");
+    await connection.execute(
+      `INSERT INTO node_commands
+       (id,node_id,application_id,command_type,payload)
+       VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'write_persistent_file',?)`,
+      [
+        commandId,
+        application.nodeId,
+        applicationId,
+        JSON.stringify({
+          path: input.path,
+          encryptedContent: encryptSecret(input.content).toString("base64"),
+          restartProcesses: input.restartProcesses,
+        }),
+      ],
+    );
+    await connection.execute(
+      `INSERT INTO audit_events
+       (team_id,user_id,product_key,action,resource_type,resource_id,metadata)
+       VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'panel','persistent_file.written','application',?,?)`,
+      [
+        teamId,
+        user.id,
+        applicationId,
+        JSON.stringify({
+          path: input.path,
+          restartProcesses: input.restartProcesses,
+        }),
+      ],
+    );
+    await connection.commit();
+    return { commandId, status: "queued" };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 export async function queueApplicationLogSnapshot(

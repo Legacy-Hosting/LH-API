@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   createApplicationSchema,
+  persistentFileWriteSchema,
   updateApplicationSchema,
 } from "../src/products/panel/modules/applications/application.schema.js";
 import { allocateApplicationPorts } from "../src/products/panel/modules/applications/application.service.js";
@@ -113,4 +114,29 @@ test("application settings accept deployment commands and persistent paths", () 
   });
 
   assert.equal(parsed.success, true);
+});
+
+test("persistent file writes require a safe configured-style path and bounded content", () => {
+  assert.equal(
+    persistentFileWriteSchema.safeParse({
+      path: "V2/var/secrets/settings.key",
+      content: "base64-key-material",
+      restartProcesses: true,
+    }).success,
+    true,
+  );
+  assert.equal(
+    persistentFileWriteSchema.safeParse({
+      path: "../../etc/shadow",
+      content: "secret",
+    }).success,
+    false,
+  );
+  assert.equal(
+    persistentFileWriteSchema.safeParse({
+      path: "V2/var/secrets/settings.key",
+      content: "",
+    }).success,
+    false,
+  );
 });
