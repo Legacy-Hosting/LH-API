@@ -45,3 +45,16 @@ test(
     assert.ok(Array.isArray(rows));
   },
 );
+
+test(
+  "application process aliases are valid in strict MySQL modes",
+  { skip: !process.env.DATABASE_URL },
+  async () => {
+    const [rows] = await database().query<RowDataPacket[]>(
+      `SELECT is_primary AS \`primary\`,is_public AS \`public\`
+       FROM application_processes LIMIT 1`,
+    );
+
+    assert.ok(Array.isArray(rows));
+  },
+);

@@ -208,7 +208,7 @@ export async function claimAgentCommand(nodeId: string) {
       `SELECT BIN_TO_UUID(p.id) AS id,p.name,p.pm2_process_name AS processName,
               p.process_type AS type,p.working_directory AS workingDirectory,
               p.executable,p.arguments,p.internal_port AS internalPort,
-              p.is_primary AS primary,p.is_public AS public,p.routes,p.enabled,
+              p.is_primary AS \`primary\`,p.is_public AS \`public\`,p.routes,p.enabled,
               p.start_order AS startOrder,p.instances,p.restart_delay_ms AS restartDelayMs,
               p.inherit_environment AS inheritEnvironment,p.health_path AS healthPath,
               p.host_variable AS hostVariable,p.port_variable AS portVariable,

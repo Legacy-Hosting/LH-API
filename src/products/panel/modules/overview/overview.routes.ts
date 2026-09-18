@@ -1,14 +1,11 @@
-import type { FastifyPluginAsync, FastifyRequest } from "fastify";
+import type { FastifyPluginAsync } from "fastify";
 import type { RowDataPacket } from "mysql2";
 import { database } from "../../../../core/database/mysql.js";
-import type { SessionUser } from "../../../../shared/modules/auth/auth.types.js";
 import { teamFrom } from "../../../../shared/modules/teams/team.context.js";
 
 export const overviewRoutes: FastifyPluginAsync = async (app) => {
   app.get("/overview", async (request) => {
     const team = teamFrom(request);
-    const user = (request as FastifyRequest & { sessionUser: SessionUser })
-      .sessionUser;
     const [applications, domains, deployments] = await Promise.all([
       database().query<(RowDataPacket & { total: number; running: number })[]>(
         "SELECT COUNT(*) AS total,COALESCE(SUM(status='running'),0) AS running FROM applications WHERE team_id=UUID_TO_BIN(?)",
@@ -26,32 +23,18 @@ export const overviewRoutes: FastifyPluginAsync = async (app) => {
     ]);
 
     const appStats = applications[0][0];
-    let nodeStats = { total: 0, online: 0 };
-    if (user.isPlatformAdmin) {
-      const [nodes] = await database().query<
-        (RowDataPacket & { total: number; online: number })[]
-      >(
-        "SELECT COUNT(*) AS total,COALESCE(SUM(status='online'),0) AS online FROM nodes",
-      );
-      nodeStats = {
-        total: Number(nodes[0]?.total ?? 0),
-        online: Number(nodes[0]?.online ?? 0),
-      };
-    }
     const domainStats = domains[0][0];
     return {
       data: {
         stats: {
           applications: Number(appStats?.total ?? 0),
           runningApplications: Number(appStats?.running ?? 0),
-          nodes: nodeStats.total,
-          onlineNodes: nodeStats.online,
           domains: Number(domainStats?.total ?? 0),
           proxiedDomains: Number(domainStats?.proxied ?? 0),
           deploymentsThisMonth: Number(deployments[0][0]?.total ?? 0),
         },
         systemStatus:
-          nodeStats.total === nodeStats.online
+          Number(appStats?.total ?? 0) === Number(appStats?.running ?? 0)
             ? "operational"
             : "degraded",
       },

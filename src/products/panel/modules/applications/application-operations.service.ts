@@ -93,7 +93,7 @@ export async function getApplicationDetails(
     database().query<RowDataPacket[]>(
       `SELECT BIN_TO_UUID(p.id) AS id,p.name,p.process_type AS type,
               p.working_directory AS workingDirectory,p.executable,p.arguments,
-              p.internal_port AS internalPort,p.is_primary AS primary,p.is_public AS public,
+              p.internal_port AS internalPort,p.is_primary AS \`primary\`,p.is_public AS \`public\`,
               p.routes,p.enabled,p.start_order AS startOrder,p.instances,
               p.restart_delay_ms AS restartDelayMs,p.inherit_environment AS inheritEnvironment,
               p.health_path AS healthPath,d.hostname,
@@ -115,7 +115,7 @@ export async function getApplicationDetails(
       [applicationId],
     ),
     database().query<RowDataPacket[]>(
-      `SELECT d.hostname,ad.is_primary AS primary
+      `SELECT d.hostname,ad.is_primary AS \`primary\`
        FROM application_domains ad JOIN domains d ON d.id=ad.domain_id
        WHERE ad.application_id=UUID_TO_BIN(?) ORDER BY ad.is_primary DESC,d.hostname`,
       [applicationId],
