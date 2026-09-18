@@ -54,6 +54,87 @@ function canManageIntegrations(role: string) {
   return role === "owner" || role === "administrator";
 }
 
+function canRefreshRepositories(role: string) {
+  return (
+    role === "owner" || role === "administrator" || role === "developer"
+  );
+}
+
+async function githubRepositoriesForTeam(teamId: string) {
+  const [repositories] = await database().query<
+    (RowDataPacket & {
+      id: string;
+      integrationId: string;
+      repositoryId: string;
+      fullName: string;
+      metadata: string | Record<string, unknown> | null;
+    })[]
+  >(
+    `SELECT BIN_TO_UUID(r.id) AS id,BIN_TO_UUID(i.id) AS integrationId,r.external_resource_id AS repositoryId,
+            r.display_name AS fullName,r.metadata
+     FROM integration_resources r JOIN integrations i ON i.id=r.integration_id
+     WHERE i.team_id=UUID_TO_BIN(?) AND i.provider='github' AND i.disconnected_at IS NULL
+       AND r.resource_type='repository' AND r.enabled=TRUE ORDER BY r.display_name`,
+    [teamId],
+  );
+  return repositories;
+}
+
+async function refreshGitHubRepositories(teamId: string) {
+  const [integrations] = await database().query<
+    (RowDataPacket & { id: string; installationId: string })[]
+  >(
+    `SELECT BIN_TO_UUID(id) AS id,external_account_id AS installationId
+     FROM integrations
+     WHERE team_id=UUID_TO_BIN(?) AND provider='github' AND disconnected_at IS NULL
+     ORDER BY created_at`,
+    [teamId],
+  );
+
+  for (const integration of integrations) {
+    const installationId = Number(integration.installationId);
+    if (!Number.isSafeInteger(installationId) || installationId < 1)
+      throw new Error("Invalid GitHub installation id");
+    const repositories =
+      await listGitHubInstallationRepositories(installationId);
+    const connection = await database().getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.execute(
+        `UPDATE integration_resources SET enabled=FALSE
+         WHERE integration_id=UUID_TO_BIN(?) AND resource_type='repository'`,
+        [integration.id],
+      );
+      for (const repository of repositories) {
+        await connection.execute(
+          `INSERT INTO integration_resources
+           (id,integration_id,resource_type,external_resource_id,display_name,enabled,metadata)
+           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'repository',?,?,TRUE,?)
+           ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),enabled=TRUE,
+             metadata=VALUES(metadata),updated_at=CURRENT_TIMESTAMP(3)`,
+          [
+            randomUUID(),
+            integration.id,
+            String(repository.id),
+            repository.full_name,
+            JSON.stringify({
+              private: repository.private,
+              defaultBranch: repository.default_branch,
+              htmlUrl: repository.html_url,
+            }),
+          ],
+        );
+      }
+      await connection.commit();
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  }
+}
+
 export const integrationRoutes: FastifyPluginAsync = async (app) => {
   app.get(
     "/github",
@@ -87,23 +168,36 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: [requireSession, requireTeam] },
     async (request) => {
       const team = teamFrom(request);
-      const [repositories] = await database().query<
-        (RowDataPacket & {
-          id: string;
-          integrationId: string;
-          repositoryId: string;
-          fullName: string;
-          metadata: string | Record<string, unknown> | null;
-        })[]
-      >(
-        `SELECT BIN_TO_UUID(r.id) AS id,BIN_TO_UUID(i.id) AS integrationId,r.external_resource_id AS repositoryId,
-              r.display_name AS fullName,r.metadata
-       FROM integration_resources r JOIN integrations i ON i.id=r.integration_id
-       WHERE i.team_id=UUID_TO_BIN(?) AND i.provider='github' AND i.disconnected_at IS NULL
-         AND r.resource_type='repository' AND r.enabled=TRUE ORDER BY r.display_name`,
-        [team.id],
-      );
-      return { data: repositories, meta: { team } };
+      return { data: await githubRepositoriesForTeam(team.id), meta: { team } };
+    },
+  );
+
+  app.post(
+    "/github/repositories/refresh",
+    { preHandler: [requireSession, requireTeam] },
+    async (request, reply) => {
+      const team = teamFrom(request);
+      if (!canRefreshRepositories(team.role))
+        return reply.status(403).send({ error: "team_write_required" });
+      try {
+        await refreshGitHubRepositories(team.id);
+        reply.header("Cache-Control", "no-store");
+        return {
+          data: await githubRepositoriesForTeam(team.id),
+          meta: { team, refreshed: true },
+        };
+      } catch (error) {
+        request.log.error(
+          { err: error, teamId: team.id },
+          "GitHub repository refresh failed",
+        );
+        return reply
+          .status(502)
+          .send({
+            error: "github_repository_refresh_failed",
+            message: "Could not refresh repositories from GitHub",
+          });
+      }
     },
   );
 
