@@ -53,10 +53,10 @@ test("multi-process applications accept path routing, workers, aliases, and scop
       },
       {
         ...web,
-        name: "worker",
-        type: "worker",
-        workingDirectory: "V2/Bifrost-Worker",
-        args: ["dist/worker.js"],
+        name: "discord-bot",
+        type: "bot",
+        workingDirectory: "V2/Bifrost-Bot",
+        args: ["dist/bot.js"],
         primary: false,
         public: false,
         routes: [],
@@ -83,6 +83,13 @@ test("customers cannot supply PORT or expose a worker through HTTP", () => {
   assert.equal(
     createApplicationSchema.safeParse({
       ...base,
+      processes: [{ ...web, type: "bot" }],
+    }).success,
+    false,
+  );
+  assert.equal(
+    createApplicationSchema.safeParse({
+      ...base,
       processes: [{ ...web, type: "worker" }],
     }).success,
     false,
@@ -92,10 +99,10 @@ test("customers cannot supply PORT or expose a worker through HTTP", () => {
 test("ports are assigned only to web and API processes without reusing occupied ports", () => {
   assert.deepEqual(
     allocateApplicationPorts(
-      ["web", "worker", "api", "custom", "web"],
+      ["web", "worker", "api", "bot", "custom", "web"],
       [3000, 3001, 3004],
     ),
-    [3002, null, 3003, null, 3005],
+    [3002, null, 3003, null, null, 3005],
   );
 });
 

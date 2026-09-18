@@ -44,7 +44,7 @@ type ProcessRow = RowDataPacket & {
   id: string;
   name: string;
   processName: string;
-  type: "web" | "api" | "worker" | "custom";
+  type: "web" | "api" | "bot" | "worker" | "custom";
   workingDirectory: string;
   executable: string;
   arguments: string | string[];

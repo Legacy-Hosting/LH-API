@@ -16,7 +16,7 @@ const applicationProcess = z.object({
     .min(1)
     .max(80)
     .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
-  type: z.enum(["web", "api", "worker", "custom"]),
+  type: z.enum(["web", "api", "bot", "worker", "custom"]),
   workingDirectory: z
     .string()
     .trim()
