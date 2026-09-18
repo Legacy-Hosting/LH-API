@@ -1,11 +1,15 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
-import { createApplicationSchema } from "./application.schema.js";
+import {
+  createApplicationSchema,
+  updateApplicationSchema,
+} from "./application.schema.js";
 import {
   createApplication,
   deleteApplicationEnvironmentVariable,
   listApplications,
   queueApplicationCommand,
   replaceApplicationEnvironment,
+  updateApplication,
   upsertApplicationEnvironmentVariable,
 } from "./application.service.js";
 import { teamFrom } from "../../../../shared/modules/teams/team.context.js";
@@ -130,6 +134,44 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
       return reply
         .status(conflict ? 409 : 400)
         .send({ error: conflict ? "application_or_domain_exists" : message });
+    }
+  });
+
+  app.patch("/applications/:applicationId", async (request, reply) => {
+    const params = applicationParams.safeParse(request.params);
+    const body = updateApplicationSchema.safeParse(request.body);
+    if (!params.success || !body.success)
+      return reply.status(400).send({
+        error: "validation_error",
+        details: body.success ? undefined : body.error.flatten(),
+      });
+    const team = teamFrom(request);
+    if (!canMutate(team.role))
+      return reply.status(403).send({ error: "team_write_required" });
+    const user = (request as FastifyRequest & { sessionUser: SessionUser })
+      .sessionUser;
+    try {
+      return {
+        data: await updateApplication(
+          params.data.applicationId,
+          team.id,
+          user,
+          body.data,
+        ),
+      };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "application_update_failed";
+      if (message === "application_not_found")
+        return reply.status(404).send({ error: message });
+      const conflict =
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ER_DUP_ENTRY";
+      return reply
+        .status(conflict ? 409 : 400)
+        .send({ error: conflict ? "application_name_exists" : message });
     }
   });
 

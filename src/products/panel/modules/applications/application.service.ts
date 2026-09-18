@@ -5,11 +5,15 @@ import { database } from "../../../../core/database/mysql.js";
 import type { SessionUser } from "../../../../shared/modules/auth/auth.types.js";
 import type { TeamContext } from "../../../../shared/modules/teams/team.context.js";
 import { encryptSecret } from "../../../../shared/security/secrets.js";
-import type { createApplicationSchema } from "./application.schema.js";
+import type {
+  createApplicationSchema,
+  updateApplicationSchema,
+} from "./application.schema.js";
 import { inspectRepository } from "./repository-inspection.service.js";
 import { provisionCloudflareCname } from "../../../../shared/modules/integrations/cloudflare-api.js";
 
 type CreateApplication = z.infer<typeof createApplicationSchema>;
+type UpdateApplication = z.infer<typeof updateApplicationSchema>;
 type NodeRow = RowDataPacket & { id: string; cnameTarget: string };
 type ZoneRow = RowDataPacket & { name: string };
 
@@ -169,6 +173,100 @@ export async function deleteApplicationEnvironmentVariable(
     [applicationId, teamId, key],
   );
   return result.affectedRows > 0;
+}
+
+function runtimeObject(value: string | Record<string, unknown> | null) {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object"
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function updateApplication(
+  applicationId: string,
+  teamId: string,
+  user: SessionUser,
+  input: UpdateApplication,
+) {
+  const connection = await database().getConnection();
+  try {
+    await connection.beginTransaction();
+    const [applications] = await connection.query<
+      (RowDataPacket & {
+        runtime: string | Record<string, unknown> | null;
+        repository: string | null;
+      })[]
+    >(
+      `SELECT detected_runtime AS runtime,repository_full_name AS repository
+       FROM applications
+       WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND deleted_at IS NULL
+       FOR UPDATE`,
+      [applicationId, teamId],
+    );
+    const application = applications[0];
+    if (!application) throw new Error("application_not_found");
+
+    const runtime = runtimeObject(application.runtime);
+    if (input.installCommand) runtime.install = input.installCommand;
+    if (application.repository && !runtime.install)
+      throw new Error("application_install_command_required");
+    runtime.build = input.buildCommand;
+    runtime.checks = input.checkCommands;
+
+    await connection.execute(
+      `UPDATE applications
+       SET name=?,repository_branch=?,auto_deploy=?,detected_runtime=?
+       WHERE id=UUID_TO_BIN(?)`,
+      [
+        input.name,
+        input.branch,
+        input.autoDeploy,
+        Object.keys(runtime).length ? JSON.stringify(runtime) : null,
+        applicationId,
+      ],
+    );
+    await connection.execute(
+      "DELETE FROM application_persistent_paths WHERE application_id=UUID_TO_BIN(?)",
+      [applicationId],
+    );
+    for (const path of input.persistentPaths) {
+      await connection.execute(
+        `INSERT INTO application_persistent_paths
+         (id,application_id,relative_path,path_type)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)`,
+        [randomUUID(), applicationId, path.path, path.type],
+      );
+    }
+    await connection.execute(
+      `INSERT INTO audit_events
+       (team_id,user_id,product_key,action,resource_type,resource_id,metadata)
+       VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'panel','application.updated','application',?,?)`,
+      [
+        teamId,
+        user.id,
+        applicationId,
+        JSON.stringify({
+          name: input.name,
+          branch: input.branch,
+          autoDeploy: input.autoDeploy,
+          persistentPaths: input.persistentPaths.length,
+        }),
+      ],
+    );
+    await connection.commit();
+    return { updated: true };
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }
 
 export async function queueApplicationCommand(

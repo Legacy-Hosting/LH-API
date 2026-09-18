@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createApplicationSchema } from "../src/products/panel/modules/applications/application.schema.js";
+import {
+  createApplicationSchema,
+  updateApplicationSchema,
+} from "../src/products/panel/modules/applications/application.schema.js";
 import { allocateApplicationPorts } from "../src/products/panel/modules/applications/application.service.js";
 
 const base = {
@@ -93,4 +96,21 @@ test("ports are assigned only to web and API processes without reusing occupied 
     ),
     [3002, null, 3003, null, 3005],
   );
+});
+
+test("application settings accept deployment commands and persistent paths", () => {
+  const parsed = updateApplicationSchema.safeParse({
+    name: "bifrost-renamed",
+    branch: "production",
+    autoDeploy: false,
+    installCommand: { command: "pnpm", args: ["--dir", "V2", "install"] },
+    buildCommand: { command: "pnpm", args: ["--dir", "V2", "build"] },
+    checkCommands: [{ command: "pnpm", args: ["--dir", "V2", "test"] }],
+    persistentPaths: [
+      { path: "V2/var/secrets/settings.key", type: "file" },
+      { path: "V2/var/uploads", type: "directory" },
+    ],
+  });
+
+  assert.equal(parsed.success, true);
 });

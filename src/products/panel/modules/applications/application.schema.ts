@@ -89,15 +89,27 @@ const persistentPath = z.object({
   type: z.enum(["file", "directory"]).default("directory"),
 });
 
+const applicationName = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(2)
+  .max(80)
+  .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
+
+export const updateApplicationSchema = z.object({
+  name: applicationName,
+  branch: z.string().trim().min(1).max(255),
+  autoDeploy: z.boolean(),
+  installCommand: runtimeCommand.optional(),
+  buildCommand: runtimeCommand.nullable(),
+  checkCommands: z.array(runtimeCommand).max(10),
+  persistentPaths: z.array(persistentPath).max(50),
+});
+
 export const createApplicationSchema = z
   .object({
-    name: z
-      .string()
-      .trim()
-      .toLowerCase()
-      .min(2)
-      .max(80)
-      .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/),
+    name: applicationName,
     domain: hostname,
     rootDomain: hostname,
     nodeId: z.string().uuid(),
