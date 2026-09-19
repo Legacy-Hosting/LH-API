@@ -318,6 +318,8 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
             return reply.status(404).send({ error: error.message });
           if (error.message === "deployment_already_in_progress")
             return reply.status(409).send({ error: error.message });
+          if (error.message === "application_deletion_in_progress")
+            return reply.status(409).send({ error: error.message });
           if (error.message === "application_not_deployable")
             return reply.status(400).send({ error: error.message });
         }
@@ -494,8 +496,12 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
           ),
         });
     } catch (error) {
-      if (error instanceof Error && error.message === "application_not_found")
-        return reply.status(404).send({ error: error.message });
+      if (error instanceof Error) {
+        if (error.message === "application_not_found")
+          return reply.status(404).send({ error: error.message });
+        if (error.message === "application_deletion_in_progress")
+          return reply.status(409).send({ error: error.message });
+      }
       throw error;
     }
   });

@@ -8,7 +8,12 @@ const hostname = z
     /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/,
   );
 
-const applicationProcess = z.object({
+const processEnvironment = z.record(
+  z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+  z.string().max(65535),
+);
+
+const applicationProcessFields = {
   name: z
     .string()
     .trim()
@@ -60,13 +65,114 @@ const applicationProcess = z.object({
     .trim()
     .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
     .optional(),
-  environment: z
-    .record(
-      z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
-      z.string().max(65535),
-    )
-    .default({}),
+};
+
+const applicationProcess = z.object({
+  ...applicationProcessFields,
+  environment: processEnvironment.default({}),
 });
+
+const updatedApplicationProcess = z.object({
+  ...applicationProcessFields,
+  id: z.string().uuid().optional(),
+  environment: processEnvironment.optional(),
+});
+
+function validateProcesses(
+  processes: Array<
+    | z.infer<typeof applicationProcess>
+    | z.infer<typeof updatedApplicationProcess>
+  >,
+  context: z.RefinementCtx,
+) {
+  if (!processes.length) return;
+  const names = new Set<string>();
+  const routesByHostname = new Map<string, Set<string>>();
+  let primaryProcesses = 0;
+  for (const [index, process] of processes.entries()) {
+    if (names.has(process.name)) {
+      context.addIssue({
+        code: "custom",
+        path: ["processes", index, "name"],
+        message: "Process names must be unique",
+      });
+    }
+    names.add(process.name);
+    if (process.primary) primaryProcesses += 1;
+    if (process.environment && "PORT" in process.environment) {
+      context.addIssue({
+        code: "custom",
+        path: ["processes", index, "environment", "PORT"],
+        message: "PORT is managed by Legacy Hosting",
+      });
+    }
+    if (process.primary && !process.public) {
+      context.addIssue({
+        code: "custom",
+        path: ["processes", index, "public"],
+        message: "The primary process must be public",
+      });
+    }
+    if (process.primary && !process.enabled) {
+      context.addIssue({
+        code: "custom",
+        path: ["processes", index, "enabled"],
+        message: "The primary process must be enabled",
+      });
+    }
+    if (process.primary && process.hostname) {
+      context.addIssue({
+        code: "custom",
+        path: ["processes", index, "hostname"],
+        message: "The public process uses the application hostname",
+      });
+    }
+    if (process.public && !["web", "api"].includes(process.type)) {
+      context.addIssue({
+        code: "custom",
+        path: ["processes", index, "type"],
+        message: "Only web and API processes can use HTTP routing",
+      });
+    }
+    if (process.public && process.routes.length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["processes", index, "routes"],
+        message: "Public processes need at least one route",
+      });
+    }
+    if (!process.public && (process.hostname || process.routes.length)) {
+      context.addIssue({
+        code: "custom",
+        path: ["processes", index, "public"],
+        message: "Only public processes can define hostnames and routes",
+      });
+    }
+    if (process.public) {
+      const routeHost = process.hostname ?? "__shared__";
+      const routes = routesByHostname.get(routeHost) ?? new Set<string>();
+      for (const [routeIndex, route] of process.routes.entries()) {
+        const normalizedRoute = route.replace(/\*$/, "").replace(/\/$/, "") || "/";
+        if (routes.has(normalizedRoute)) {
+          context.addIssue({
+            code: "custom",
+            path: ["processes", index, "routes", routeIndex],
+            message: "Routes must be unique for each hostname",
+          });
+        }
+        routes.add(normalizedRoute);
+      }
+      routesByHostname.set(routeHost, routes);
+    }
+  }
+  if (primaryProcesses !== 1) {
+    context.addIssue({
+      code: "custom",
+      path: ["processes"],
+      message: "Exactly one web or API process must be public",
+    });
+  }
+}
 
 const runtimeCommand = z.object({
   command: z.enum(["npm", "pnpm", "yarn", "bun", "node"]),
@@ -97,15 +203,18 @@ const applicationName = z
   .max(80)
   .regex(/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/);
 
-export const updateApplicationSchema = z.object({
-  name: applicationName,
-  branch: z.string().trim().min(1).max(255),
-  autoDeploy: z.boolean(),
-  installCommand: runtimeCommand.optional(),
-  buildCommand: runtimeCommand.nullable(),
-  checkCommands: z.array(runtimeCommand).max(10),
-  persistentPaths: z.array(persistentPath).max(50),
-});
+export const updateApplicationSchema = z
+  .object({
+    name: applicationName,
+    branch: z.string().trim().min(1).max(255),
+    autoDeploy: z.boolean(),
+    installCommand: runtimeCommand.optional(),
+    buildCommand: runtimeCommand.nullable(),
+    checkCommands: z.array(runtimeCommand).max(10),
+    persistentPaths: z.array(persistentPath).max(50),
+    processes: z.array(updatedApplicationProcess).min(1).max(10),
+  })
+  .superRefine((value, context) => validateProcesses(value.processes, context));
 
 export const persistentFileWriteSchema = z.object({
   path: persistentPath.shape.path,
@@ -144,10 +253,9 @@ export const createApplicationSchema = z
     message: "PORT is managed by Legacy Hosting",
   })
   .superRefine((value, context) => {
-    const names = new Set<string>();
+    validateProcesses(value.processes, context);
     const hostnames = new Set<string>([value.domain]);
     const sharedHostnames = new Set<string>(value.additionalHostnames);
-    const routesByHostname = new Map<string, Set<string>>();
     for (const [index, additionalHostname] of value.additionalHostnames.entries()) {
       if (hostnames.has(additionalHostname)) {
         context.addIssue({
@@ -159,52 +267,7 @@ export const createApplicationSchema = z
       hostnames.add(additionalHostname);
     }
     if (!value.processes.length) return;
-    let primaryProcesses = 0;
     for (const [index, process] of value.processes.entries()) {
-      if (names.has(process.name)) {
-        context.addIssue({
-          code: "custom",
-          path: ["processes", index, "name"],
-          message: "Process names must be unique",
-        });
-      }
-      names.add(process.name);
-      if (process.primary) primaryProcesses += 1;
-      if ("PORT" in process.environment) {
-        context.addIssue({
-          code: "custom",
-          path: ["processes", index, "environment", "PORT"],
-          message: "PORT is managed by Legacy Hosting",
-        });
-      }
-      if (process.primary && !process.public) {
-        context.addIssue({
-          code: "custom",
-          path: ["processes", index, "public"],
-          message: "The primary process must be public",
-        });
-      }
-      if (process.primary && !process.enabled) {
-        context.addIssue({
-          code: "custom",
-          path: ["processes", index, "enabled"],
-          message: "The primary process must be enabled",
-        });
-      }
-      if (process.primary && process.hostname) {
-        context.addIssue({
-          code: "custom",
-          path: ["processes", index, "hostname"],
-          message: "The public process uses the application hostname",
-        });
-      }
-      if (process.public && !["web", "api"].includes(process.type)) {
-        context.addIssue({
-          code: "custom",
-          path: ["processes", index, "type"],
-          message: "Only web and API processes can use HTTP routing",
-        });
-      }
       if (process.hostname) {
         if (sharedHostnames.has(process.hostname)) {
           context.addIssue({
@@ -215,42 +278,5 @@ export const createApplicationSchema = z
         }
         hostnames.add(process.hostname);
       }
-      if (process.public && process.routes.length === 0) {
-        context.addIssue({
-          code: "custom",
-          path: ["processes", index, "routes"],
-          message: "Public processes need at least one route",
-        });
-      }
-      if (!process.public && (process.hostname || process.routes.length)) {
-        context.addIssue({
-          code: "custom",
-          path: ["processes", index, "public"],
-          message: "Only public processes can define hostnames and routes",
-        });
-      }
-      if (process.public) {
-        const routeHost = process.hostname ?? "__shared__";
-        const routes = routesByHostname.get(routeHost) ?? new Set<string>();
-        for (const [routeIndex, route] of process.routes.entries()) {
-          const normalizedRoute = route.replace(/\*$/, "").replace(/\/$/, "") || "/";
-          if (routes.has(normalizedRoute)) {
-            context.addIssue({
-              code: "custom",
-              path: ["processes", index, "routes", routeIndex],
-              message: "Routes must be unique for each hostname",
-            });
-          }
-          routes.add(normalizedRoute);
-        }
-        routesByHostname.set(routeHost, routes);
-      }
-    }
-    if (primaryProcesses !== 1) {
-      context.addIssue({
-        code: "custom",
-        path: ["processes"],
-        message: "Exactly one web or API process must be public",
-      });
     }
   });

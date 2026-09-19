@@ -118,6 +118,7 @@ test("application settings accept deployment commands and persistent paths", () 
       { path: "V2/var/secrets/settings.key", type: "file" },
       { path: "V2/var/uploads", type: "directory" },
     ],
+    processes: [web],
   });
 
   assert.equal(parsed.success, true);

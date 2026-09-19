@@ -201,16 +201,131 @@ export async function updateApplication(
       (RowDataPacket & {
         runtime: string | Record<string, unknown> | null;
         repository: string | null;
+        nodeId: string;
+        domainId: string;
+        status: string;
+        teamSlug: string;
       })[]
     >(
-      `SELECT detected_runtime AS runtime,repository_full_name AS repository
-       FROM applications
-       WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND deleted_at IS NULL
+      `SELECT a.detected_runtime AS runtime,a.repository_full_name AS repository,
+              BIN_TO_UUID(a.node_id) AS nodeId,BIN_TO_UUID(a.domain_id) AS domainId,
+              a.status,t.slug AS teamSlug
+       FROM applications a JOIN teams t ON t.id=a.team_id
+       WHERE a.id=UUID_TO_BIN(?) AND a.team_id=UUID_TO_BIN(?) AND a.deleted_at IS NULL
        FOR UPDATE`,
       [applicationId, teamId],
     );
     const application = applications[0];
     if (!application) throw new Error("application_not_found");
+    if (application.status === "deleting")
+      throw new Error("application_deletion_in_progress");
+
+    const [existingProcesses] = await connection.query<
+      (RowDataPacket & {
+        id: string;
+        name: string;
+        processName: string;
+        internalPort: number | null;
+      })[]
+    >(
+      `SELECT BIN_TO_UUID(id) AS id,name,pm2_process_name AS processName,
+              internal_port AS internalPort
+       FROM application_processes WHERE application_id=UUID_TO_BIN(?) FOR UPDATE`,
+      [applicationId],
+    );
+    const existingById = new Map(
+      existingProcesses.map((process) => [process.id, process]),
+    );
+    const existingByName = new Map(
+      existingProcesses.map((process) => [process.name, process]),
+    );
+    const claimedIds = new Set<string>();
+    const processInputs = input.processes.map((process) => {
+      const existing = process.id
+        ? existingById.get(process.id)
+        : existingByName.get(process.name);
+      if (process.id && !existing) throw new Error("application_process_not_found");
+      if (existing && claimedIds.has(existing.id))
+        throw new Error("application_process_duplicate");
+      if (existing) claimedIds.add(existing.id);
+      return { ...process, existing };
+    });
+
+    const [domainRows] = await connection.query<
+      (RowDataPacket & { id: string; hostname: string })[]
+    >(
+      `SELECT BIN_TO_UUID(d.id) AS id,d.hostname
+       FROM application_domains ad JOIN domains d ON d.id=ad.domain_id
+       WHERE ad.application_id=UUID_TO_BIN(?)`,
+      [applicationId],
+    );
+    const domains = new Map(domainRows.map((domain) => [domain.hostname, domain.id]));
+    const primaryHostname = domainRows.find(
+      (domain) => domain.id === application.domainId,
+    )?.hostname;
+
+    const [usedPortRows] = await connection.query<
+      (RowDataPacket & { internalPort: number })[]
+    >(
+      `SELECT a.internal_port AS internalPort FROM applications a
+       WHERE a.node_id=UUID_TO_BIN(?) AND a.id<>UUID_TO_BIN(?)
+         AND a.deleted_at IS NULL AND a.internal_port IS NOT NULL
+       UNION
+       SELECT p.internal_port AS internalPort FROM application_processes p
+       JOIN applications a ON a.id=p.application_id
+       WHERE p.node_id=UUID_TO_BIN(?) AND p.application_id<>UUID_TO_BIN(?)
+         AND a.deleted_at IS NULL AND p.internal_port IS NOT NULL`,
+      [application.nodeId, applicationId, application.nodeId, applicationId],
+    );
+    const usedPorts = new Set(usedPortRows.map((row) => Number(row.internalPort)));
+    for (const process of processInputs) {
+      if (
+        ["web", "api"].includes(process.type) &&
+        process.existing?.internalPort
+      ) {
+        usedPorts.add(Number(process.existing.internalPort));
+      }
+    }
+    const newPorts = allocateApplicationPorts(
+      processInputs.map((process) =>
+        ["web", "api"].includes(process.type) &&
+        !process.existing?.internalPort
+          ? process.type
+          : "worker",
+      ),
+      usedPorts,
+    );
+    const processes = processInputs.map((process, index) => {
+      const requestedHostname =
+        process.hostname && process.hostname !== primaryHostname
+          ? process.hostname
+          : undefined;
+      const domainId = process.public
+        ? requestedHostname
+          ? domains.get(requestedHostname)
+          : application.domainId
+        : null;
+      if (process.public && requestedHostname && !domainId)
+        throw new Error("process_hostname_not_configured");
+      const suffix = `-${process.name}`;
+      const prefix = `${application.teamSlug}-${input.name}`.slice(
+        0,
+        120 - suffix.length,
+      );
+      return {
+        ...process,
+        id: process.existing?.id ?? randomUUID(),
+        oldName: process.existing?.name ?? null,
+        processName: process.existing?.processName ?? `${prefix}${suffix}`,
+        internalPort: ["web", "api"].includes(process.type)
+          ? process.existing?.internalPort ?? newPorts[index]
+          : null,
+        domainId: domainId ?? null,
+      };
+    });
+    const primaryProcess = processes.find((process) => process.primary);
+    if (!primaryProcess?.internalPort)
+      throw new Error("primary_process_port_required");
 
     const runtime = runtimeObject(application.runtime);
     if (input.installCommand) runtime.install = input.installCommand;
@@ -221,15 +336,153 @@ export async function updateApplication(
 
     await connection.execute(
       `UPDATE applications
-       SET name=?,repository_branch=?,auto_deploy=?,detected_runtime=?
+       SET name=?,repository_branch=?,auto_deploy=?,detected_runtime=?,
+           pm2_process_name=?,internal_port=?
        WHERE id=UUID_TO_BIN(?)`,
       [
         input.name,
         input.branch,
         input.autoDeploy,
         Object.keys(runtime).length ? JSON.stringify(runtime) : null,
+        primaryProcess.processName,
+        primaryProcess.internalPort,
         applicationId,
       ],
+    );
+
+    const removedProcesses = existingProcesses.filter(
+      (process) => !claimedIds.has(process.id),
+    );
+    for (const process of removedProcesses) {
+      await connection.execute(
+        `INSERT IGNORE INTO application_process_cleanup
+         (application_id,node_id,pm2_process_name)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?)`,
+        [applicationId, application.nodeId, process.processName],
+      );
+      await connection.execute(
+        "DELETE FROM application_processes WHERE id=UUID_TO_BIN(?)",
+        [process.id],
+      );
+    }
+
+    const [scopedEnvironment] = await connection.query<
+      (RowDataPacket & {
+        processName: string;
+        key: string;
+        encryptedValue: Buffer;
+        secret: number;
+      })[]
+    >(
+      `SELECT process_name AS processName,variable_key AS \`key\`,
+              encrypted_value AS encryptedValue,is_secret AS secret
+       FROM application_environment_variables
+       WHERE application_id=UUID_TO_BIN(?) AND environment='production' AND process_name<>'*'`,
+      [applicationId],
+    );
+    await connection.execute(
+      `DELETE FROM application_environment_variables
+       WHERE application_id=UUID_TO_BIN(?) AND environment='production' AND process_name<>'*'`,
+      [applicationId],
+    );
+
+    for (const process of processes) {
+      const values: Array<string | number | boolean | null> = [
+        process.id,
+        applicationId,
+        application.nodeId,
+        process.domainId,
+        process.name,
+        process.processName,
+        process.type,
+        process.workingDirectory,
+        process.executable,
+        JSON.stringify(process.args),
+        process.internalPort ?? null,
+        process.primary,
+        process.public,
+        JSON.stringify(process.routes),
+        process.enabled,
+        process.startOrder,
+        process.instances,
+        process.restartDelayMs,
+        process.inheritEnvironment,
+        process.healthPath ?? null,
+        process.hostVariable ?? null,
+        process.portVariable ?? null,
+      ];
+      if (process.existing) {
+        await connection.execute(
+          `UPDATE application_processes SET node_id=UUID_TO_BIN(?),domain_id=UUID_TO_BIN(?),
+             name=?,pm2_process_name=?,process_type=?,working_directory=?,executable=?,arguments=?,
+             internal_port=?,is_primary=?,is_public=?,routes=?,enabled=?,start_order=?,instances=?,
+             restart_delay_ms=?,inherit_environment=?,health_path=?,host_variable=?,port_variable=?
+           WHERE id=UUID_TO_BIN(?) AND application_id=UUID_TO_BIN(?)`,
+          [
+            application.nodeId,
+            process.domainId,
+            ...values.slice(4),
+            process.id,
+            applicationId,
+          ],
+        );
+      } else {
+        await connection.execute(
+          `INSERT INTO application_processes
+           (id,application_id,node_id,domain_id,name,pm2_process_name,process_type,
+            working_directory,executable,arguments,internal_port,is_primary,is_public,routes,
+            enabled,start_order,instances,restart_delay_ms,inherit_environment,health_path,
+            host_variable,port_variable)
+           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          values,
+        );
+      }
+    }
+
+    const renamedProcesses = new Map(
+      processes
+        .filter((process) => process.oldName)
+        .map((process) => [process.oldName as string, process.name]),
+    );
+    for (const variable of scopedEnvironment) {
+      const processName = renamedProcesses.get(variable.processName);
+      if (!processName) continue;
+      await connection.execute(
+        `INSERT INTO application_environment_variables
+         (id,application_id,environment,process_name,variable_key,encrypted_value,is_secret)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'production',?,?,?,?)`,
+        [
+          randomUUID(),
+          applicationId,
+          processName,
+          variable.key,
+          variable.encryptedValue,
+          variable.secret,
+        ],
+      );
+    }
+    for (const process of processes) {
+      for (const [key, value] of Object.entries(process.environment ?? {})) {
+        await connection.execute(
+          `INSERT INTO application_environment_variables
+           (id,application_id,environment,process_name,variable_key,encrypted_value,is_secret)
+           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'production',?,?,?,TRUE)
+           ON DUPLICATE KEY UPDATE encrypted_value=VALUES(encrypted_value),is_secret=TRUE`,
+          [
+            randomUUID(),
+            applicationId,
+            process.name,
+            key,
+            encryptSecret(value),
+          ],
+        );
+      }
+    }
+    await connection.execute(
+      `INSERT INTO application_health_checks (application_id,path,next_check_at)
+       VALUES (UUID_TO_BIN(?),?,CURRENT_TIMESTAMP(3))
+       ON DUPLICATE KEY UPDATE path=VALUES(path),next_check_at=CURRENT_TIMESTAMP(3)`,
+      [applicationId, primaryProcess.healthPath ?? "/"],
     );
     await connection.execute(
       "DELETE FROM application_persistent_paths WHERE application_id=UUID_TO_BIN(?)",
@@ -255,6 +508,7 @@ export async function updateApplication(
           name: input.name,
           branch: input.branch,
           autoDeploy: input.autoDeploy,
+          processes: input.processes.map((process) => process.name),
           persistentPaths: input.persistentPaths.length,
         }),
       ],
@@ -282,7 +536,8 @@ export async function queueApplicationCommand(
       status: string;
     })[]
   >(
-    `SELECT BIN_TO_UUID(node_id) AS nodeId,repository_full_name AS repository,detected_runtime AS runtime,status FROM applications
+    `SELECT BIN_TO_UUID(node_id) AS nodeId,repository_full_name AS repository,
+            detected_runtime AS runtime,status FROM applications
      WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND deleted_at IS NULL LIMIT 1`,
     [applicationId, teamId],
   );
@@ -299,6 +554,15 @@ export async function queueApplicationCommand(
       "SELECT id FROM applications WHERE id=UUID_TO_BIN(?) FOR UPDATE",
       [applicationId],
     );
+    if (commandType === "delete") {
+      const [activeDeletions] = await connection.query<RowDataPacket[]>(
+        `SELECT 1 FROM node_commands WHERE application_id=UUID_TO_BIN(?)
+         AND command_type='delete' AND status IN ('queued','leased') LIMIT 1`,
+        [applicationId],
+      );
+      if (activeDeletions[0])
+        throw new Error("application_deletion_in_progress");
+    }
     if (deploymentId) {
       const [activeDeployments] = await connection.query<RowDataPacket[]>(
         `SELECT 1 FROM node_commands WHERE application_id=UUID_TO_BIN(?)

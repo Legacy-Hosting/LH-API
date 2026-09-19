@@ -202,8 +202,13 @@ export async function claimAgentCommand(nodeId: string) {
   if (!command) return null;
 
   let processes: ProcessRow[] = [];
+  let cleanupProcessNames: string[] = [];
   let persistentPaths: { path: string; type: "file" | "directory" }[] = [];
   let hostnames: string[] = [];
+  let proxies: Array<{
+    hostname: string;
+    routes: Array<{ prefix: string; port: number; processName: string }>;
+  }> = [];
   if (command.applicationId) {
     const [rows] = await database().query<ProcessRow[]>(
       `SELECT BIN_TO_UUID(p.id) AS id,p.name,p.pm2_process_name AS processName,
@@ -219,6 +224,14 @@ export async function claimAgentCommand(nodeId: string) {
       [command.applicationId],
     );
     processes = rows;
+    const [cleanupRows] = await database().query<
+      (RowDataPacket & { processName: string })[]
+    >(
+      `SELECT pm2_process_name AS processName FROM application_process_cleanup
+       WHERE application_id=UUID_TO_BIN(?) ORDER BY created_at`,
+      [command.applicationId],
+    );
+    cleanupProcessNames = cleanupRows.map((row) => row.processName);
     const [paths] = await database().query<
       (RowDataPacket & {
         path: string;
@@ -232,14 +245,37 @@ export async function claimAgentCommand(nodeId: string) {
     );
     persistentPaths = paths;
     const [domainRows] = await database().query<
-      (RowDataPacket & { hostname: string })[]
+      (RowDataPacket & {
+        hostname: string;
+        routingMode: "shared" | "dedicated";
+      })[]
     >(
-      `SELECT d.hostname FROM application_domains ad
+      `SELECT d.hostname,ad.routing_mode AS routingMode FROM application_domains ad
        JOIN domains d ON d.id=ad.domain_id
        WHERE ad.application_id=UUID_TO_BIN(?) ORDER BY ad.is_primary DESC,d.hostname`,
       [command.applicationId],
     );
     hostnames = domainRows.map((domain) => domain.hostname);
+    proxies = domainRows.map((domain) => ({
+        hostname: domain.hostname,
+        routes: processes
+          .filter(
+            (process) =>
+              process.public &&
+              process.enabled &&
+              process.internalPort &&
+              (domain.routingMode === "shared"
+                ? process.hostname === command.hostname
+                : process.hostname === domain.hostname),
+          )
+          .flatMap((process) =>
+            (json<string[]>(process.routes) ?? []).map((prefix) => ({
+              prefix,
+              port: Number(process.internalPort),
+              processName: process.name,
+            })),
+          ),
+      }));
   }
 
   const environment: Record<string, string> = {};
@@ -364,6 +400,8 @@ export async function claimAgentCommand(nodeId: string) {
           rootDomain: command.rootDomain,
           hostnames,
           runtime: json<Record<string, unknown>>(command.runtime),
+          cleanupProcessNames,
+          proxies,
           processes: processes.map((process) => ({
             id: process.id,
             name: process.name,
@@ -504,6 +542,16 @@ export async function completeAgentCommand(
           input.succeeded ? input.metadata?.deploymentCommitSha ?? null : null,
           command.deploymentId,
         ],
+      );
+    }
+    if (
+      input.succeeded &&
+      command.applicationId &&
+      ["deploy", "delete"].includes(command.commandType)
+    ) {
+      await connection.execute(
+        "DELETE FROM application_process_cleanup WHERE application_id=UUID_TO_BIN(?)",
+        [command.applicationId],
       );
     }
     if (

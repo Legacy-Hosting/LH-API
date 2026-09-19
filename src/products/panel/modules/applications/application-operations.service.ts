@@ -56,7 +56,14 @@ export async function getApplicationDetails(
   const application = applications[0];
   if (!application) throw new Error("application_not_found");
 
-  const [environment, deployments, processes, persistentPaths, hostnames] =
+  const [
+    environment,
+    deployments,
+    processes,
+    processEnvironment,
+    persistentPaths,
+    hostnames,
+  ] =
     await Promise.all([
     database().query<
       (RowDataPacket & {
@@ -97,7 +104,8 @@ export async function getApplicationDetails(
               p.internal_port AS internalPort,p.is_primary AS \`primary\`,p.is_public AS \`public\`,
               p.routes,p.enabled,p.start_order AS startOrder,p.instances,
               p.restart_delay_ms AS restartDelayMs,p.inherit_environment AS inheritEnvironment,
-              p.health_path AS healthPath,d.hostname,
+              p.health_path AS healthPath,p.host_variable AS hostVariable,
+              p.port_variable AS portVariable,d.hostname,
               s.process_status AS status,s.cpu_percent AS cpuPercent,
               s.memory_bytes AS memoryBytes,s.restart_count AS restartCount,
               s.recorded_at AS recordedAt
@@ -108,6 +116,15 @@ export async function getApplicationDetails(
          ORDER BY latest.recorded_at DESC LIMIT 1
        )
        WHERE p.application_id=UUID_TO_BIN(?) ORDER BY p.start_order,p.created_at`,
+      [applicationId],
+    ),
+    database().query<
+      (RowDataPacket & { processName: string; key: string })[]
+    >(
+      `SELECT process_name AS processName,variable_key AS \`key\`
+       FROM application_environment_variables
+       WHERE application_id=UUID_TO_BIN(?) AND environment='production' AND process_name<>'*'
+       ORDER BY process_name,variable_key`,
       [applicationId],
     ),
     database().query<RowDataPacket[]>(
@@ -140,6 +157,9 @@ export async function getApplicationDetails(
       public: Boolean(process.public),
       enabled: Boolean(process.enabled),
       inheritEnvironment: Boolean(process.inheritEnvironment),
+      environmentKeys: processEnvironment[0]
+        .filter((variable) => variable.processName === process.name)
+        .map((variable) => variable.key),
     })),
     persistentPaths: persistentPaths[0],
     hostnames: hostnames[0].map((item) => ({
