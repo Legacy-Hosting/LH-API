@@ -5,6 +5,10 @@ export type SessionUser = {
   email: string;
   displayName: string;
   isPlatformAdmin: boolean;
+  actorIsPlatformAdmin?: boolean;
+  supportUserId?: string;
+  supportUserEmail?: string;
+  supportUserDisplayName?: string;
 };
 
 export type AuthenticatedRequest = FastifyRequest & {

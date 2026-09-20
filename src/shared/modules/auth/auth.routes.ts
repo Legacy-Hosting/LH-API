@@ -164,6 +164,58 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get(
+    "/admin/users",
+    { preHandler: requirePlatformAdmin },
+    async () => {
+      const [users, memberships] = await Promise.all([
+        database().query<
+          (RowDataPacket & {
+            id: string;
+            email: string;
+            displayName: string;
+            status: string;
+            isPlatformAdmin: number;
+            createdAt: Date;
+          })[]
+        >(
+          `SELECT BIN_TO_UUID(id) AS id,email,display_name AS displayName,status,
+                  is_platform_admin AS isPlatformAdmin,created_at AS createdAt
+           FROM users ORDER BY created_at DESC`,
+        ),
+        database().query<
+          (RowDataPacket & {
+            userId: string;
+            id: string;
+            name: string;
+            slug: string;
+            role: string;
+          })[]
+        >(
+          `SELECT BIN_TO_UUID(tm.user_id) AS userId,BIN_TO_UUID(t.id) AS id,
+                  t.name,t.slug,tm.role
+           FROM team_members tm JOIN teams t ON t.id=tm.team_id
+           ORDER BY t.name`,
+        ),
+      ]);
+      const teamsByUser = new Map<string, typeof memberships[0]>();
+      for (const membership of memberships[0]) {
+        const teams = teamsByUser.get(membership.userId) ?? [];
+        teams.push(membership);
+        teamsByUser.set(membership.userId, teams);
+      }
+      return {
+        data: users[0].map((user) => ({
+          ...user,
+          isPlatformAdmin: Boolean(user.isPlatformAdmin),
+          teams: (teamsByUser.get(user.id) ?? []).map(
+            ({ userId: _userId, ...team }) => team,
+          ),
+        })),
+      };
+    },
+  );
+
+  app.get(
     "/admin/registration",
     { preHandler: requirePlatformAdmin },
     async () => ({ data: await registrationStatus() }),

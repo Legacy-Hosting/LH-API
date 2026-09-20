@@ -3,6 +3,10 @@ import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
 import { database } from "../../../core/database/mysql.js";
 import type { SessionUser } from "../auth/auth.types.js";
+import {
+  applySupportContext,
+  effectiveUserId,
+} from "../auth/support-context.js";
 
 export type TeamContext = {
   id: string;
@@ -25,6 +29,8 @@ export async function requireTeam(
     .sessionUser;
   if (!user)
     return reply.status(401).send({ error: "authentication_required" });
+  const supportResult = await applySupportContext(request, reply);
+  if (supportResult) return supportResult;
 
   const requestedTeam = request.headers["x-team-id"];
   if (
@@ -40,7 +46,7 @@ export async function requireTeam(
      FROM team_members tm JOIN teams t ON t.id=tm.team_id
      WHERE tm.user_id=UUID_TO_BIN(?) AND (? IS NULL OR t.id=UUID_TO_BIN(?))
      ORDER BY t.created_at LIMIT 1`,
-    [user.id, requestedTeam ?? null, requestedTeam ?? null],
+    [effectiveUserId(user), requestedTeam ?? null, requestedTeam ?? null],
   );
   const team = rows[0];
   if (!team) return reply.status(403).send({ error: "team_access_required" });

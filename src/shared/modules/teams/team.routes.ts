@@ -7,6 +7,10 @@ import { database } from "../../../core/database/mysql.js";
 import { randomToken, tokenHash } from "../auth/auth.crypto.js";
 import { requireSession } from "../auth/auth.guard.js";
 import type { SessionUser } from "../auth/auth.types.js";
+import {
+  applySupportContext,
+  effectiveUserId,
+} from "../auth/support-context.js";
 
 type MembershipRole = "owner" | "administrator" | "developer" | "viewer";
 type MembershipRow = RowDataPacket & { role: MembershipRole };
@@ -53,6 +57,7 @@ function canManageTeam(role: MembershipRole) {
 
 export const teamRoutes: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", requireSession);
+  app.addHook("preHandler", applySupportContext);
 
   app.get("/", async (request) => {
     const user = userFrom(request);
@@ -67,7 +72,7 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
       `SELECT BIN_TO_UUID(t.id) AS id,t.name,t.slug,tm.role
        FROM team_members tm JOIN teams t ON t.id=tm.team_id
        WHERE tm.user_id=UUID_TO_BIN(?) ORDER BY t.name`,
-      [user.id],
+      [effectiveUserId(user)],
     );
     return { data: teams };
   });
@@ -80,6 +85,8 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: "validation_error", details: body.error.flatten() });
 
     const user = userFrom(request);
+    if (user.supportUserId)
+      return reply.status(403).send({ error: "support_action_not_allowed" });
     const teamId = randomUUID();
     const slug = createTeamSlug(body.data.name);
     const connection = await database().getConnection();
@@ -128,7 +135,7 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(400).send({ error: "validation_error" });
 
     const user = userFrom(request);
-    const access = await membership(user.id, params.data.teamId);
+    const access = await membership(effectiveUserId(user), params.data.teamId);
     if (!access || !canManageTeam(access.role))
       return reply.status(403).send({ error: "team_admin_required" });
 
@@ -170,7 +177,11 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
     const params = teamParams.safeParse(request.params);
     if (!params.success)
       return reply.status(400).send({ error: "validation_error" });
-    const access = await membership(userFrom(request).id, params.data.teamId);
+    const user = userFrom(request);
+    const access = await membership(
+      effectiveUserId(user),
+      params.data.teamId,
+    );
     if (!access)
       return reply.status(403).send({ error: "team_access_required" });
 
@@ -195,7 +206,11 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
     const params = teamParams.safeParse(request.params);
     if (!params.success)
       return reply.status(400).send({ error: "validation_error" });
-    const access = await membership(userFrom(request).id, params.data.teamId);
+    const user = userFrom(request);
+    const access = await membership(
+      effectiveUserId(user),
+      params.data.teamId,
+    );
     if (!access || !canManageTeam(access.role))
       return reply.status(403).send({ error: "team_admin_required" });
 
@@ -222,7 +237,7 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
     if (!params.success || !body.success)
       return reply.status(400).send({ error: "validation_error" });
     const user = userFrom(request);
-    const access = await membership(user.id, params.data.teamId);
+    const access = await membership(effectiveUserId(user), params.data.teamId);
     if (!access || !canManageTeam(access.role))
       return reply.status(403).send({ error: "team_admin_required" });
 
@@ -294,7 +309,11 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
     const params = invitationParams.safeParse(request.params);
     if (!params.success)
       return reply.status(400).send({ error: "validation_error" });
-    const access = await membership(userFrom(request).id, params.data.teamId);
+    const user = userFrom(request);
+    const access = await membership(
+      effectiveUserId(user),
+      params.data.teamId,
+    );
     if (!access || !canManageTeam(access.role))
       return reply.status(403).send({ error: "team_admin_required" });
     await database().execute(
@@ -310,6 +329,8 @@ export const teamRoutes: FastifyPluginAsync = async (app) => {
     if (!body.success)
       return reply.status(400).send({ error: "validation_error" });
     const user = userFrom(request);
+    if (user.supportUserId)
+      return reply.status(403).send({ error: "support_action_not_allowed" });
     const [rows] = await database().query<
       (RowDataPacket & { id: string; teamId: string; role: MembershipRole })[]
     >(

@@ -45,6 +45,7 @@ const githubSetupQuery = z.object({
   code: z.string().min(1),
   state: z.string().min(20),
 });
+const integrationParams = z.object({ integrationId: z.string().uuid() });
 
 function userFrom(request: FastifyRequest) {
   return (request as FastifyRequest & { sessionUser: SessionUser }).sessionUser;
@@ -135,6 +136,48 @@ async function refreshGitHubRepositories(teamId: string) {
   }
 }
 
+async function disconnectIntegration(
+  integrationId: string,
+  provider: "github" | "cloudflare",
+  teamId: string,
+  userId: string,
+) {
+  const connection = await database().getConnection();
+  try {
+    await connection.beginTransaction();
+    const [result] = await connection.execute<ResultSetHeader>(
+      `UPDATE integrations SET disconnected_at=CURRENT_TIMESTAMP(3),
+         encrypted_credentials=?,token_expires_at=NULL,updated_at=CURRENT_TIMESTAMP(3)
+       WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND provider=?
+         AND disconnected_at IS NULL`,
+      [encryptSecret("{}"), integrationId, teamId, provider],
+    );
+    if (!result.affectedRows) throw new Error("integration_not_found");
+    await connection.execute(
+      "UPDATE integration_resources SET enabled=FALSE WHERE integration_id=UUID_TO_BIN(?)",
+      [integrationId],
+    );
+    await connection.execute(
+      `INSERT INTO audit_events
+       (team_id,user_id,product_key,action,resource_type,resource_id,metadata)
+       VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'panel',?,'integration',?,?)`,
+      [
+        teamId,
+        userId,
+        `integration.${provider}.disconnected`,
+        integrationId,
+        JSON.stringify({ provider }),
+      ],
+    );
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
 export const integrationRoutes: FastifyPluginAsync = async (app) => {
   app.get(
     "/github",
@@ -160,6 +203,32 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
         [team.id],
       );
       return { data: connections, meta: { team } };
+    },
+  );
+
+  app.delete(
+    "/github/:integrationId",
+    { preHandler: [requireSession, requireTeam] },
+    async (request, reply) => {
+      const params = integrationParams.safeParse(request.params);
+      if (!params.success)
+        return reply.status(400).send({ error: "validation_error" });
+      const team = teamFrom(request);
+      if (!canManageIntegrations(team.role))
+        return reply.status(403).send({ error: "team_admin_required" });
+      try {
+        await disconnectIntegration(
+          params.data.integrationId,
+          "github",
+          team.id,
+          userFrom(request).id,
+        );
+        return reply.status(204).send();
+      } catch (error) {
+        if (error instanceof Error && error.message === "integration_not_found")
+          return reply.status(404).send({ error: error.message });
+        throw error;
+      }
     },
   );
 
@@ -385,6 +454,32 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
         [team.id],
       );
       return { data: connections, meta: { team } };
+    },
+  );
+
+  app.delete(
+    "/cloudflare/:integrationId",
+    { preHandler: [requireSession, requireTeam] },
+    async (request, reply) => {
+      const params = integrationParams.safeParse(request.params);
+      if (!params.success)
+        return reply.status(400).send({ error: "validation_error" });
+      const team = teamFrom(request);
+      if (!canManageIntegrations(team.role))
+        return reply.status(403).send({ error: "team_admin_required" });
+      try {
+        await disconnectIntegration(
+          params.data.integrationId,
+          "cloudflare",
+          team.id,
+          userFrom(request).id,
+        );
+        return reply.status(204).send();
+      } catch (error) {
+        if (error instanceof Error && error.message === "integration_not_found")
+          return reply.status(404).send({ error: error.message });
+        throw error;
+      }
     },
   );
 
