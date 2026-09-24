@@ -1,6 +1,6 @@
 {
   "name": "@legacyhosting/api",
-  "version": "1.0.27",
+  "version": "1.0.28",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.4.1",
@@ -26,15 +26,15 @@
     "@fastify/helmet": "13.1.1",
     "@fastify/rate-limit": "11.2.0",
     "@simplewebauthn/server": "14.0.2",
-    "dotenv": "17.4.2",
+    "dotenv": "18.0.3",
     "fastify": "5.12.4",
     "fastify-raw-body": "6.0.1",
     "mysql2": "3.24.4",
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@types/node": "22.20.3",
-    "tsx": "4.23.13",
+    "@types/node": "22.20.4",
+    "tsx": "4.23.15",
     "typescript": "7.0.2"
   }
 }

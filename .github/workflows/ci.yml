@@ -41,6 +41,8 @@ jobs:
           node-version: 22.22.1
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Prepare standalone agent installer fixture
+        run: install -D -m 0755 tests/fixtures/install-node-agent.sh ../ops/scripts/install-node-agent.sh
       - run: pnpm db:migrate
       - run: pnpm test
       - run: pnpm typecheck && pnpm build
