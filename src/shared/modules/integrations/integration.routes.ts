@@ -7,6 +7,7 @@ import { database } from "../../../core/database/mysql.js";
 import { randomToken, tokenHash } from "../auth/auth.crypto.js";
 import { requireSession } from "../auth/auth.guard.js";
 import type { SessionUser } from "../auth/auth.types.js";
+import { effectiveUserId } from "../auth/support-context.js";
 import { requireTeam, teamFrom } from "../teams/team.context.js";
 import { encryptSecret } from "../../security/secrets.js";
 import {
@@ -15,12 +16,16 @@ import {
   cloudflareZones,
   exchangeCloudflareCode,
 } from "./cloudflare-oauth.js";
+import { githubUserAuthorizationUrl } from "./github-app.js";
 import {
-  getGitHubInstallation,
-  githubInstallationUrl,
-  listGitHubInstallationRepositories,
-  verifyGitHubInstallationForUser,
-} from "./github-app.js";
+  authorizeGitHubUser,
+  disconnectGitHubUser,
+  ensureGitHubOrganizationInstallation,
+  GitHubIntegrationError,
+  githubUserConnectionForTeam,
+  listStoredGitHubRepositoriesForUser,
+  refreshGitHubRepositoriesForUser,
+} from "./github-user.service.js";
 
 type OAuthStateRow = RowDataPacket & {
   id: string;
@@ -40,11 +45,6 @@ const callbackQuery = z.object({
   state: z.string().min(20),
   error: z.string().optional(),
 });
-const githubSetupQuery = z.object({
-  installation_id: z.coerce.number().int().positive(),
-  code: z.string().min(1),
-  state: z.string().min(20),
-});
 const integrationParams = z.object({ integrationId: z.string().uuid() });
 
 function userFrom(request: FastifyRequest) {
@@ -56,84 +56,7 @@ function canManageIntegrations(role: string) {
 }
 
 function canRefreshRepositories(role: string) {
-  return (
-    role === "owner" || role === "administrator" || role === "developer"
-  );
-}
-
-async function githubRepositoriesForTeam(teamId: string) {
-  const [repositories] = await database().query<
-    (RowDataPacket & {
-      id: string;
-      integrationId: string;
-      repositoryId: string;
-      fullName: string;
-      metadata: string | Record<string, unknown> | null;
-    })[]
-  >(
-    `SELECT BIN_TO_UUID(r.id) AS id,BIN_TO_UUID(i.id) AS integrationId,r.external_resource_id AS repositoryId,
-            r.display_name AS fullName,r.metadata
-     FROM integration_resources r JOIN integrations i ON i.id=r.integration_id
-     WHERE i.team_id=UUID_TO_BIN(?) AND i.provider='github' AND i.disconnected_at IS NULL
-       AND r.resource_type='repository' AND r.enabled=TRUE ORDER BY r.display_name`,
-    [teamId],
-  );
-  return repositories;
-}
-
-async function refreshGitHubRepositories(teamId: string) {
-  const [integrations] = await database().query<
-    (RowDataPacket & { id: string; installationId: string })[]
-  >(
-    `SELECT BIN_TO_UUID(id) AS id,external_account_id AS installationId
-     FROM integrations
-     WHERE team_id=UUID_TO_BIN(?) AND provider='github' AND disconnected_at IS NULL
-     ORDER BY created_at`,
-    [teamId],
-  );
-
-  for (const integration of integrations) {
-    const installationId = Number(integration.installationId);
-    if (!Number.isSafeInteger(installationId) || installationId < 1)
-      throw new Error("Invalid GitHub installation id");
-    const repositories =
-      await listGitHubInstallationRepositories(installationId);
-    const connection = await database().getConnection();
-    try {
-      await connection.beginTransaction();
-      await connection.execute(
-        `UPDATE integration_resources SET enabled=FALSE
-         WHERE integration_id=UUID_TO_BIN(?) AND resource_type='repository'`,
-        [integration.id],
-      );
-      for (const repository of repositories) {
-        await connection.execute(
-          `INSERT INTO integration_resources
-           (id,integration_id,resource_type,external_resource_id,display_name,enabled,metadata)
-           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'repository',?,?,TRUE,?)
-           ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),enabled=TRUE,
-             metadata=VALUES(metadata),updated_at=CURRENT_TIMESTAMP(3)`,
-          [
-            randomUUID(),
-            integration.id,
-            String(repository.id),
-            repository.full_name,
-            JSON.stringify({
-              private: repository.private,
-              defaultBranch: repository.default_branch,
-              htmlUrl: repository.html_url,
-            }),
-          ],
-        );
-      }
-      await connection.commit();
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
-  }
+  return role === "owner" || role === "administrator" || role === "developer";
 }
 
 async function disconnectIntegration(
@@ -184,6 +107,7 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: [requireSession, requireTeam] },
     async (request) => {
       const team = teamFrom(request);
+      const user = userFrom(request);
       const [connections] = await database().query<
         (RowDataPacket & {
           id: string;
@@ -202,7 +126,40 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
        GROUP BY i.id ORDER BY i.created_at`,
         [team.id],
       );
-      return { data: connections, meta: { team } };
+      return {
+        data: connections,
+        meta: {
+          team,
+          organization: env.GITHUB_ORGANIZATION,
+          userConnection: await githubUserConnectionForTeam(
+            team.id,
+            effectiveUserId(user),
+          ),
+        },
+      };
+    },
+  );
+
+  app.delete(
+    "/github/user",
+    { preHandler: [requireSession, requireTeam] },
+    async (request, reply) => {
+      const team = teamFrom(request);
+      const user = userFrom(request);
+      if (user.supportUserId)
+        return reply.status(403).send({ error: "support_action_not_allowed" });
+      try {
+        await disconnectGitHubUser(team.id, effectiveUserId(user), user.id);
+        return reply.status(204).send();
+      } catch (error) {
+        if (error instanceof GitHubIntegrationError)
+          return reply
+            .status(
+              error.code === "github_user_connection_not_found" ? 404 : 409,
+            )
+            .send({ error: error.code, message: error.message });
+        throw error;
+      }
     },
   );
 
@@ -237,7 +194,14 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
     { preHandler: [requireSession, requireTeam] },
     async (request) => {
       const team = teamFrom(request);
-      return { data: await githubRepositoriesForTeam(team.id), meta: { team } };
+      const user = userFrom(request);
+      return {
+        data: await listStoredGitHubRepositoriesForUser(
+          team.id,
+          effectiveUserId(user),
+        ),
+        meta: { team },
+      };
     },
   );
 
@@ -249,23 +213,29 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
       if (!canRefreshRepositories(team.role))
         return reply.status(403).send({ error: "team_write_required" });
       try {
-        await refreshGitHubRepositories(team.id);
+        const user = userFrom(request);
+        const repositories = await refreshGitHubRepositoriesForUser(
+          team.id,
+          effectiveUserId(user),
+        );
         reply.header("Cache-Control", "no-store");
         return {
-          data: await githubRepositoriesForTeam(team.id),
+          data: repositories,
           meta: { team, refreshed: true },
         };
       } catch (error) {
+        if (error instanceof GitHubIntegrationError)
+          return reply
+            .status(409)
+            .send({ error: error.code, message: error.message });
         request.log.error(
           { err: error, teamId: team.id },
           "GitHub repository refresh failed",
         );
-        return reply
-          .status(502)
-          .send({
-            error: "github_repository_refresh_failed",
-            message: "Could not refresh repositories from GitHub",
-          });
+        return reply.status(502).send({
+          error: "github_repository_refresh_failed",
+          message: "Could not refresh repositories from GitHub",
+        });
       }
     },
   );
@@ -278,8 +248,18 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
       if (!body.success)
         return reply.status(400).send({ error: "validation_error" });
       const team = teamFrom(request);
-      if (!canManageIntegrations(team.role))
-        return reply.status(403).send({ error: "team_admin_required" });
+      const user = userFrom(request);
+      if (user.supportUserId)
+        return reply.status(403).send({ error: "support_action_not_allowed" });
+      try {
+        await ensureGitHubOrganizationInstallation();
+      } catch (error) {
+        if (error instanceof GitHubIntegrationError)
+          return reply
+            .status(409)
+            .send({ error: error.code, message: error.message });
+        throw error;
+      }
       const state = randomToken(32);
       await database().execute(
         `INSERT INTO oauth_authorization_states (id,team_id,user_id,provider,state_hash,return_path,expires_at)
@@ -287,19 +267,19 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
         [
           randomUUID(),
           team.id,
-          userFrom(request).id,
+          effectiveUserId(user),
           tokenHash(state),
           body.data.returnPath,
         ],
       );
-      return { data: { installationUrl: githubInstallationUrl(state) } };
+      return { data: { authorizationUrl: githubUserAuthorizationUrl(state) } };
     },
   );
 
   app.get("/github/callback", async (request, reply) => {
-    const query = githubSetupQuery.safeParse(request.query);
+    const query = callbackQuery.safeParse(request.query);
     if (!query.success)
-      return reply.status(400).send({ error: "invalid_github_setup" });
+      return reply.status(400).send({ error: "invalid_github_callback" });
     const [states] = await database().query<OAuthStateRow[]>(
       `SELECT BIN_TO_UUID(id) AS id,BIN_TO_UUID(team_id) AS teamId,BIN_TO_UUID(user_id) AS userId,return_path AS returnPath
        FROM oauth_authorization_states WHERE state_hash=? AND provider='github'
@@ -317,114 +297,57 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
       [state.id],
     );
     if (!consumed.affectedRows)
-      return reply.status(400).send({ error: "invalid_or_expired_oauth_state" });
+      return reply
+        .status(400)
+        .send({ error: "invalid_or_expired_oauth_state" });
     const redirect = new URL(state.returnPath, env.PANEL_ORIGIN);
 
+    if (query.data.error || !query.data.code) {
+      redirect.searchParams.set("integration", "github_denied");
+      return reply.redirect(redirect.toString());
+    }
+
     try {
-      await verifyGitHubInstallationForUser(
-        query.data.installation_id,
+      const [memberships] = await database().query<RowDataPacket[]>(
+        `SELECT 1 FROM team_members
+         WHERE team_id=UUID_TO_BIN(?) AND user_id=UUID_TO_BIN(?) LIMIT 1`,
+        [state.teamId, state.userId],
+      );
+      if (!memberships[0])
+        throw new GitHubIntegrationError(
+          "team_access_required",
+          "Your workspace access changed. Start the GitHub connection again.",
+        );
+      const authorized = await authorizeGitHubUser(
+        state.userId,
+        state.teamId,
         query.data.code,
       );
-      const installation = await getGitHubInstallation(
-        query.data.installation_id,
+      await database().execute(
+        `INSERT INTO audit_events
+         (team_id,user_id,product_key,action,resource_type,resource_id,metadata)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'panel','integration.github.user_connected',
+           'github_user_connection',?,?)`,
+        [
+          state.teamId,
+          state.userId,
+          authorized.connectionId,
+          JSON.stringify({
+            githubUserId: authorized.githubUser.id,
+            githubLogin: authorized.githubUser.login,
+            integrationId: authorized.integrationId,
+            repositories: authorized.repositories.length,
+          }),
+        ],
       );
-      if (installation.suspended_at)
-        throw new Error("GitHub App installation is suspended");
-      const repositories = await listGitHubInstallationRepositories(
-        installation.id,
-      );
-      const installationId = String(installation.id);
-      const [existing] = await database().query<
-        (RowDataPacket & { id: string })[]
-      >(
-        `SELECT BIN_TO_UUID(id) AS id FROM integrations
-         WHERE team_id=UUID_TO_BIN(?) AND provider='github' AND external_account_id=? LIMIT 1`,
-        [state.teamId, installationId],
-      );
-      const integrationId = existing[0]?.id ?? randomUUID();
-      const connection = await database().getConnection();
-      try {
-        await connection.beginTransaction();
-        await connection.execute(
-          `INSERT INTO integrations
-           (id,team_id,provider,auth_method,connection_scope,external_account_id,display_name,encrypted_credentials,metadata,disconnected_at)
-           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'github','oauth','customer',?,?,?,?,NULL)
-           ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),encrypted_credentials=VALUES(encrypted_credentials),
-             metadata=VALUES(metadata),disconnected_at=NULL,updated_at=CURRENT_TIMESTAMP(3)`,
-          [
-            integrationId,
-            state.teamId,
-            installationId,
-            installation.account.login,
-            encryptSecret(JSON.stringify({ installationId: installation.id })),
-            JSON.stringify({
-              accountId: installation.account.id,
-              accountType: installation.account.type,
-              repositorySelection: installation.repository_selection,
-              permissions: installation.permissions,
-            }),
-          ],
-        );
-        await connection.execute(
-          "DELETE FROM integration_resources WHERE integration_id=UUID_TO_BIN(?)",
-          [integrationId],
-        );
-        await connection.execute(
-          `INSERT INTO integration_resources (id,integration_id,resource_type,external_resource_id,display_name,metadata)
-           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'account',?,?,?)`,
-          [
-            randomUUID(),
-            integrationId,
-            String(installation.account.id),
-            installation.account.login,
-            JSON.stringify({
-              type: installation.account.type,
-              avatarUrl: installation.account.avatar_url ?? null,
-            }),
-          ],
-        );
-        for (const repository of repositories) {
-          await connection.execute(
-            `INSERT INTO integration_resources (id,integration_id,resource_type,external_resource_id,display_name,metadata)
-             VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'repository',?,?,?)`,
-            [
-              randomUUID(),
-              integrationId,
-              String(repository.id),
-              repository.full_name,
-              JSON.stringify({
-                private: repository.private,
-                defaultBranch: repository.default_branch,
-                htmlUrl: repository.html_url,
-              }),
-            ],
-          );
-        }
-        await connection.execute(
-          `INSERT INTO audit_events (team_id,user_id,product_key,action,resource_type,resource_id,metadata)
-           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'panel','integration.github.connected','integration',?,?)`,
-          [
-            state.teamId,
-            state.userId,
-            integrationId,
-            JSON.stringify({
-              installationId,
-              repositories: repositories.length,
-            }),
-          ],
-        );
-        await connection.commit();
-      } catch (error) {
-        await connection.rollback();
-        throw error;
-      } finally {
-        connection.release();
-      }
       redirect.searchParams.set("integration", "github_connected");
       return reply.redirect(redirect.toString());
     } catch (error) {
-      request.log.error(error);
-      redirect.searchParams.set("integration", "github_failed");
+      if (!(error instanceof GitHubIntegrationError)) request.log.error(error);
+      redirect.searchParams.set(
+        "integration",
+        error instanceof GitHubIntegrationError ? error.code : "github_failed",
+      );
       return reply.redirect(redirect.toString());
     }
   });
@@ -556,7 +479,9 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
       [state.id],
     );
     if (!consumed.affectedRows)
-      return reply.status(400).send({ error: "invalid_or_expired_oauth_state" });
+      return reply
+        .status(400)
+        .send({ error: "invalid_or_expired_oauth_state" });
 
     const redirect = new URL(state.returnPath, env.PANEL_ORIGIN);
     if (query.data.error || !query.data.code) {

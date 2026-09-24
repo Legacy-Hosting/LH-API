@@ -51,6 +51,8 @@ const schema = z
   GITHUB_APP_SLUG: z.string().min(1).optional(),
   GITHUB_CLIENT_ID: z.string().min(1).optional(),
   GITHUB_CLIENT_SECRET: z.string().min(1).optional(),
+  GITHUB_OAUTH_REDIRECT_URI: z.string().url().optional(),
+  GITHUB_ORGANIZATION: z.string().min(1).default("NextarchStudio"),
   GITHUB_APP_PRIVATE_KEY_BASE64: z.string().min(1).optional(),
   GITHUB_WEBHOOK_SECRET: z.string().min(32).optional(),
   GITHUB_API_VERSION: z.string().default("2026-03-10"),

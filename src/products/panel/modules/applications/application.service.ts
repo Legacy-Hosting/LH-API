@@ -3,6 +3,7 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import type { z } from "zod";
 import { database } from "../../../../core/database/mysql.js";
 import type { SessionUser } from "../../../../shared/modules/auth/auth.types.js";
+import { effectiveUserId } from "../../../../shared/modules/auth/support-context.js";
 import type { TeamContext } from "../../../../shared/modules/teams/team.context.js";
 import { encryptSecret } from "../../../../shared/security/secrets.js";
 import type {
@@ -642,6 +643,7 @@ export async function createApplication(
   const inspectedRuntime = input.repository
       ? await inspectRepository(
           team.id,
+          effectiveUserId(user),
           input.repository,
           input.branch,
           {

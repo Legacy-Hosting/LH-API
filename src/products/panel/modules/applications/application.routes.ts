@@ -15,6 +15,7 @@ import {
 } from "./application.service.js";
 import { teamFrom } from "../../../../shared/modules/teams/team.context.js";
 import type { SessionUser } from "../../../../shared/modules/auth/auth.types.js";
+import { GitHubIntegrationError } from "../../../../shared/modules/integrations/github-user.service.js";
 import { z } from "zod";
 import {
   getApplicationCommand,
@@ -126,6 +127,10 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
       );
       return reply.status(201).send({ data: customerData });
     } catch (error) {
+      if (error instanceof GitHubIntegrationError)
+        return reply
+          .status(409)
+          .send({ error: error.code, message: error.message });
       const message =
         error instanceof Error ? error.message : "application_creation_failed";
       const conflict =

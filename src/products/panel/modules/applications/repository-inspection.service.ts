@@ -1,6 +1,7 @@
 import type { RowDataPacket } from "mysql2";
 import { database } from "../../../../core/database/mysql.js";
 import { githubInstallationRequest } from "../../../../shared/modules/integrations/github-app.js";
+import { requireGitHubRepositoryAccess } from "../../../../shared/modules/integrations/github-user.service.js";
 
 type RepositoryRow = RowDataPacket & {
   installationId: string;
@@ -54,10 +55,12 @@ export function runtimeWithoutRootManifest(
 
 export async function inspectRepository(
   teamId: string,
+  userId: string,
   fullName: string,
   branch: string,
   options: RepositoryInspectionOptions = {},
 ) {
+  await requireGitHubRepositoryAccess(teamId, userId, fullName);
   const [rows] = await database().query<RepositoryRow[]>(
     `SELECT i.external_account_id AS installationId,r.external_resource_id AS repositoryId
      FROM integration_resources r JOIN integrations i ON i.id=r.integration_id
