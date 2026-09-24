@@ -6,17 +6,15 @@ import { env } from "../src/core/config/env.js";
 import {
 	exchangeGitHubUserCode,
 	getGitHubOrganizationInstallation,
+	githubAppInstallationUrl,
 	githubAuthorizationErrorCode,
 	GitHubApiError,
-	githubRepositoriesForOrganization,
 	githubUserAuthorizationUrl,
-	hasActiveGitHubOrganizationMembership,
+	hasGitHubRepositoryReadWriteAccess,
+	listGitHubUserInstallationAccess,
 	listGitHubUserInstallationRepositories,
+	listGitHubUserInstallations,
 } from "../src/shared/modules/integrations/github-app.js";
-import {
-	GitHubIntegrationError,
-	validateGitHubUserRepositoryAccess,
-} from "../src/shared/modules/integrations/github-user.service.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -24,6 +22,7 @@ before(() => {
 	const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 	Object.assign(env, {
 		GITHUB_APP_ID: "12345",
+		GITHUB_APP_SLUG: "legacy-hosting-deployments",
 		GITHUB_CLIENT_ID: "Iv1.test-client",
 		GITHUB_CLIENT_SECRET: "test-secret",
 		GITHUB_APP_PRIVATE_KEY_BASE64: Buffer.from(
@@ -31,7 +30,6 @@ before(() => {
 		).toString("base64"),
 		GITHUB_OAUTH_REDIRECT_URI:
 			"https://api.legacyhosting.xyz/api/v1/integrations/github/callback",
-		GITHUB_ORGANIZATION: "NextarchStudio",
 	});
 });
 
@@ -51,6 +49,12 @@ test("GitHub users are sent to OAuth authorization, never installation update", 
 	);
 	assert.equal(url.searchParams.has("setup_action"), false);
 	assert.doesNotMatch(url.toString(), /installations\/new|setup_action=update/);
+	const installationUrl = githubAppInstallationUrl();
+	assert.equal(
+		installationUrl,
+		"https://github.com/apps/legacy-hosting-deployments/installations/new",
+	);
+	assert.doesNotMatch(installationUrl ?? "", /setup_action=update/);
 });
 
 test("GitHub App user OAuth exchanges the code without broad OAuth scopes", async () => {
@@ -191,85 +195,140 @@ test("different GitHub users receive different team-filtered repositories", asyn
 	);
 });
 
-test("organization membership and repository ownership are filtered per user", () => {
-	assert.equal(
-		hasActiveGitHubOrganizationMembership(
-			[
-				{ state: "active", organization: { login: "AnotherOrg" } },
-				{ state: "pending", organization: { login: "NextarchStudio" } },
-			],
-			"NextarchStudio",
+test("personal and organization installations expose only writable repositories", async () => {
+	const requests: string[] = [];
+	globalThis.fetch = async (input, init) => {
+		const url = new URL(String(input));
+		requests.push(`${url.pathname}${url.search}`);
+		assert.equal(
+			(init?.headers as Record<string, string>).Authorization,
+			"Bearer ghu_multi-account",
+		);
+		if (url.pathname === "/user/installations")
+			return new Response(
+				JSON.stringify({
+					total_count: 3,
+					installations: [
+						{
+							id: 101,
+							account: {
+								id: 1,
+								login: "NextarchStudio",
+								type: "Organization",
+							},
+							repository_selection: "all",
+							permissions: { contents: "read", metadata: "read" },
+							suspended_at: null,
+						},
+						{
+							id: 202,
+							account: { id: 2, login: "PersonA", type: "User" },
+							repository_selection: "selected",
+							permissions: { contents: "read", metadata: "read" },
+							suspended_at: null,
+						},
+						{
+							id: 303,
+							account: { id: 3, login: "PausedOrg", type: "Organization" },
+							repository_selection: "all",
+							permissions: { contents: "read" },
+							suspended_at: "2026-09-24T00:00:00Z",
+						},
+					],
+				}),
+				{ status: 200, headers: { "Content-Type": "application/json" } },
+			);
+
+		const owner = url.pathname.includes("/101/")
+			? "NextarchStudio"
+			: "PersonA";
+		const repositories =
+			owner === "NextarchStudio"
+				? [
+						{
+							id: 11,
+							name: "Writable",
+							full_name: "NextarchStudio/Writable",
+							private: true,
+							default_branch: "main",
+							html_url: "https://github.com/NextarchStudio/Writable",
+							owner: { login: "NextarchStudio" },
+							permissions: { pull: true, push: true },
+						},
+						{
+							id: 12,
+							name: "ReadOnly",
+							full_name: "NextarchStudio/ReadOnly",
+							private: true,
+							default_branch: "main",
+							html_url: "https://github.com/NextarchStudio/ReadOnly",
+							owner: { login: "NextarchStudio" },
+							permissions: { pull: true, push: false },
+						},
+					]
+				: [
+						{
+							id: 21,
+							name: "Personal",
+							full_name: "PersonA/Personal",
+							private: true,
+							default_branch: "main",
+							html_url: "https://github.com/PersonA/Personal",
+							owner: { login: "PersonA" },
+							permissions: { pull: true, push: false, admin: true },
+						},
+					];
+		return new Response(
+			JSON.stringify({ total_count: repositories.length, repositories }),
+			{ status: 200, headers: { "Content-Type": "application/json" } },
+		);
+	};
+
+	const installations = await listGitHubUserInstallations(
+		"ghu_multi-account",
+	);
+	assert.equal(installations.length, 3);
+	requests.length = 0;
+	const access = await listGitHubUserInstallationAccess(
+		"ghu_multi-account",
+	);
+	assert.deepEqual(
+		access.map((entry) => entry.installation.account.login),
+		["NextarchStudio", "PersonA"],
+	);
+	assert.deepEqual(
+		access.flatMap((entry) =>
+			entry.repositories.map((repository) => repository.full_name),
 		),
+		["NextarchStudio/Writable", "PersonA/Personal"],
+	);
+	assert.equal(requests.some((request) => request.includes("memberships")), false);
+	assert.equal(requests.some((request) => request.includes("/303/")), false);
+});
+
+test("repository access requires write permission", () => {
+	const repository = {
+		id: 1,
+		name: "ReadOnly",
+		full_name: "NextarchStudio/ReadOnly",
+		private: true,
+		default_branch: "main",
+		html_url: "https://github.com/NextarchStudio/ReadOnly",
+		owner: { login: "NextarchStudio" },
+	};
+	assert.equal(
+		hasGitHubRepositoryReadWriteAccess({
+			...repository,
+			permissions: { pull: true, push: false },
+		}),
 		false,
 	);
 	assert.equal(
-		hasActiveGitHubOrganizationMembership(
-			[{ state: "active", organization: { login: "nextarchstudio" } }],
-			"NextarchStudio",
-		),
+		hasGitHubRepositoryReadWriteAccess({
+			...repository,
+			permissions: { pull: true, push: true },
+		}),
 		true,
-	);
-
-	const repositories = githubRepositoriesForOrganization(
-		[
-			{
-				id: 1,
-				name: "Allowed",
-				full_name: "NextarchStudio/Allowed",
-				private: true,
-				default_branch: "main",
-				html_url: "https://github.com/NextarchStudio/Allowed",
-				owner: { login: "NextarchStudio" },
-			},
-			{
-				id: 2,
-				name: "Personal",
-				full_name: "PersonA/Personal",
-				private: true,
-				default_branch: "main",
-				html_url: "https://github.com/PersonA/Personal",
-				owner: { login: "PersonA" },
-			},
-		],
-		"NextarchStudio",
-	);
-	assert.deepEqual(
-		repositories.map((repository) => repository.full_name),
-		["NextarchStudio/Allowed"],
-	);
-	assert.deepEqual(githubRepositoriesForOrganization([], "NextarchStudio"), []);
-});
-
-test("a GitHub user from the wrong organization is rejected", () => {
-	assert.throws(
-		() =>
-			validateGitHubUserRepositoryAccess(
-				[{ state: "active", organization: { login: "AnotherOrg" } }],
-				[],
-				"NextarchStudio",
-			),
-		(error: unknown) =>
-			error instanceof GitHubIntegrationError &&
-			error.code === "github_organization_membership_required",
-	);
-});
-
-test("a member without repositories receives a dedicated access error", () => {
-	assert.throws(
-		() =>
-			validateGitHubUserRepositoryAccess(
-				[
-					{
-						state: "active",
-						organization: { login: "NextarchStudio" },
-					},
-				],
-				[],
-				"NextarchStudio",
-			),
-		(error: unknown) =>
-			error instanceof GitHubIntegrationError &&
-			error.code === "github_no_repository_access",
 	);
 });
 
@@ -282,7 +341,7 @@ test("SSO failures receive a dedicated actionable error", () => {
 	assert.equal(githubAuthorizationErrorCode(error), "github_sso_required");
 });
 
-test("user authorization does not remove existing installation resources", async () => {
+test("user authorization preserves deployments and is not fixed to one organization", async () => {
 	const routes = await readFile(
 		new URL(
 			"../src/shared/modules/integrations/integration.routes.ts",
@@ -298,7 +357,10 @@ test("user authorization does not remove existing installation resources", async
 		"utf8",
 	);
 	assert.doesNotMatch(routes, /githubInstallationUrl|setup_action/);
+	assert.doesNotMatch(routes, /ensureGitHubOrganizationInstallation/);
 	assert.doesNotMatch(service, /DELETE FROM integration_resources/);
 	assert.doesNotMatch(service, /integration_resources SET enabled=FALSE/);
+	assert.doesNotMatch(service, /listGitHubUserOrganizations/);
+	assert.match(service, /listGitHubUserInstallationAccess/);
 	assert.match(service, /github_no_repository_access/);
 });

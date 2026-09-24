@@ -16,11 +16,13 @@ import {
   cloudflareZones,
   exchangeCloudflareCode,
 } from "./cloudflare-oauth.js";
-import { githubUserAuthorizationUrl } from "./github-app.js";
+import {
+  githubAppInstallationUrl,
+  githubUserAuthorizationUrl,
+} from "./github-app.js";
 import {
   authorizeGitHubUser,
   disconnectGitHubUser,
-  ensureGitHubOrganizationInstallation,
   GitHubIntegrationError,
   githubUserConnectionForTeam,
   listStoredGitHubRepositoriesForUser,
@@ -108,6 +110,7 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
     async (request) => {
       const team = teamFrom(request);
       const user = userFrom(request);
+      const effectiveId = effectiveUserId(user);
       const [connections] = await database().query<
         (RowDataPacket & {
           id: string;
@@ -118,22 +121,29 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
           createdAt: Date;
         })[]
       >(
-        `SELECT BIN_TO_UUID(i.id) AS id,i.external_account_id AS installationId,i.display_name AS displayName,
-              JSON_UNQUOTE(JSON_EXTRACT(i.metadata,'$.accountType')) AS accountType,
-              COUNT(r.id) AS repositories,i.created_at AS createdAt
-       FROM integrations i LEFT JOIN integration_resources r ON r.integration_id=i.id AND r.resource_type='repository'
-       WHERE i.team_id=UUID_TO_BIN(?) AND i.provider='github' AND i.disconnected_at IS NULL
-       GROUP BY i.id ORDER BY i.created_at`,
-        [team.id],
+        `SELECT BIN_TO_UUID(i.id) AS id,ui.installation_id AS installationId,
+              ui.account_login AS displayName,ui.account_type AS accountType,
+              COUNT(a.repository_id) AS repositories,i.created_at AS createdAt
+       FROM github_user_connections c
+       JOIN github_user_installations ui ON ui.connection_id=c.id
+       JOIN integrations i ON i.id=ui.integration_id
+       LEFT JOIN github_user_repository_access a ON a.connection_id=c.id
+         AND a.integration_id=i.id
+       WHERE c.user_id=UUID_TO_BIN(?) AND c.disconnected_at IS NULL
+         AND i.team_id=UUID_TO_BIN(?) AND i.provider='github'
+         AND i.disconnected_at IS NULL
+       GROUP BY i.id,ui.installation_id,ui.account_login,ui.account_type
+       ORDER BY ui.account_type,ui.account_login`,
+        [effectiveId, team.id],
       );
       return {
         data: connections,
         meta: {
           team,
-          organization: env.GITHUB_ORGANIZATION,
+          installationUrl: githubAppInstallationUrl(),
           userConnection: await githubUserConnectionForTeam(
             team.id,
-            effectiveUserId(user),
+            effectiveId,
           ),
         },
       };
@@ -251,15 +261,6 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
       const user = userFrom(request);
       if (user.supportUserId)
         return reply.status(403).send({ error: "support_action_not_allowed" });
-      try {
-        await ensureGitHubOrganizationInstallation();
-      } catch (error) {
-        if (error instanceof GitHubIntegrationError)
-          return reply
-            .status(409)
-            .send({ error: error.code, message: error.message });
-        throw error;
-      }
       const state = randomToken(32);
       await database().execute(
         `INSERT INTO oauth_authorization_states (id,team_id,user_id,provider,state_hash,return_path,expires_at)
@@ -335,7 +336,7 @@ export const integrationRoutes: FastifyPluginAsync = async (app) => {
           JSON.stringify({
             githubUserId: authorized.githubUser.id,
             githubLogin: authorized.githubUser.login,
-            integrationId: authorized.integrationId,
+            integrationIds: authorized.integrationIds,
             repositories: authorized.repositories.length,
           }),
         ],

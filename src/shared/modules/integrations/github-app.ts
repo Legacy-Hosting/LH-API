@@ -1,7 +1,7 @@
 import { createSign } from "node:crypto";
 import { env } from "../../../core/config/env.js";
 
-type GitHubInstallation = {
+export type GitHubInstallation = {
 	id: number;
 	account: { id: number; login: string; type: string; avatar_url?: string };
 	repository_selection: "all" | "selected";
@@ -30,6 +30,11 @@ export type GitHubUserTokens = {
 	expiresIn: number | null;
 	refreshToken: string | null;
 	refreshTokenExpiresIn: number | null;
+};
+
+export type GitHubUserInstallationAccess = {
+	installation: GitHubInstallation;
+	repositories: GitHubRepository[];
 };
 
 export class GitHubApiError extends Error {
@@ -131,6 +136,11 @@ export function githubUserAuthorizationUrl(state: string) {
 	if (config.redirectUri)
 		url.searchParams.set("redirect_uri", config.redirectUri);
 	return url.toString();
+}
+
+export function githubAppInstallationUrl() {
+	if (!env.GITHUB_APP_SLUG) return null;
+	return `https://github.com/apps/${encodeURIComponent(env.GITHUB_APP_SLUG)}/installations/new`;
 }
 
 export function getGitHubOrganizationInstallation(organization: string) {
@@ -260,6 +270,23 @@ export function getAuthenticatedGitHubUser(accessToken: string) {
 	}>("/user", accessToken);
 }
 
+export async function listGitHubUserInstallations(accessToken: string) {
+	const installations: GitHubInstallation[] = [];
+	for (let page = 1; page <= 100; page += 1) {
+		const response = await githubRequest<{
+			total_count: number;
+			installations: GitHubInstallation[];
+		}>(`/user/installations?per_page=100&page=${page}`, accessToken);
+		installations.push(...response.installations);
+		if (
+			installations.length >= response.total_count ||
+			response.installations.length < 100
+		)
+			break;
+	}
+	return installations;
+}
+
 export async function listGitHubUserOrganizations(accessToken: string) {
 	const memberships: GitHubOrganizationMembership[] = [];
 	for (let page = 1; page <= 100; page += 1) {
@@ -295,6 +322,18 @@ export function githubRepositoriesForOrganization(
 	);
 }
 
+export function hasGitHubRepositoryReadWriteAccess(
+	repository: GitHubRepository,
+) {
+	const permissions = repository.permissions;
+	if (!permissions) return false;
+	const write =
+		permissions.push === true ||
+		permissions.admin === true ||
+		permissions.maintain === true;
+	return write && (permissions.pull === true || write);
+}
+
 export async function listGitHubUserInstallationRepositories(
 	installationId: number,
 	accessToken: string,
@@ -316,6 +355,32 @@ export async function listGitHubUserInstallationRepositories(
 			break;
 	}
 	return repositories;
+}
+
+export async function listGitHubUserInstallationAccess(
+	accessToken: string,
+) {
+	const installations = await listGitHubUserInstallations(accessToken);
+	const access: GitHubUserInstallationAccess[] = [];
+	for (const installation of installations) {
+		if (
+			installation.suspended_at ||
+			!["Organization", "User"].includes(installation.account.type)
+		)
+			continue;
+		const repositories = await listGitHubUserInstallationRepositories(
+			installation.id,
+			accessToken,
+		);
+		access.push({
+			installation,
+			repositories: githubRepositoriesForOrganization(
+				repositories,
+				installation.account.login,
+			).filter(hasGitHubRepositoryReadWriteAccess),
+		});
+	}
+	return access;
 }
 
 export function githubAuthorizationErrorCode(error: unknown) {

@@ -14,7 +14,7 @@ test(
     const [migrations] = await database().query<
       (RowDataPacket & { total: number })[]
     >("SELECT COUNT(*) AS total FROM schema_migrations");
-    assert.equal(Number(migrations[0]?.total), 18);
+    assert.equal(Number(migrations[0]?.total), 19);
 
     const [tables] = await database().query<
       (RowDataPacket & { tableName: string })[]
@@ -23,9 +23,9 @@ test(
        WHERE table_schema=DATABASE() AND table_name IN
        ('users','applications','application_processes','application_domains',
         'application_persistent_paths','node_metrics','application_health_checks','agent_request_nonces',
-        'github_user_connections','github_user_repository_access')`,
+        'github_user_connections','github_user_installations','github_user_repository_access')`,
     );
-    assert.equal(tables.length, 10);
+    assert.equal(tables.length, 11);
   },
 );
 

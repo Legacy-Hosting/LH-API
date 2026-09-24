@@ -1,21 +1,14 @@
 import { randomUUID } from "node:crypto";
 import type { RowDataPacket } from "mysql2";
-import { env } from "../../../core/config/env.js";
 import { database } from "../../../core/database/mysql.js";
 import { decryptSecret, encryptSecret } from "../../security/secrets.js";
 import {
 	exchangeGitHubUserCode,
 	getAuthenticatedGitHubUser,
-	getGitHubOrganizationInstallation,
-	githubRepositoriesForOrganization,
 	githubAuthorizationErrorCode,
-	GitHubApiError,
-	type GitHubOrganizationMembership,
-	type GitHubRepository,
+	type GitHubUserInstallationAccess,
 	type GitHubUserTokens,
-	listGitHubUserInstallationRepositories,
-	listGitHubUserOrganizations,
-	hasActiveGitHubOrganizationMembership,
+	listGitHubUserInstallationAccess,
 	refreshGitHubUserToken,
 } from "./github-app.js";
 
@@ -33,10 +26,6 @@ type ConnectionRow = RowDataPacket & {
 	tokenExpiresAt: Date | null;
 	refreshTokenExpiresAt: Date | null;
 };
-
-type Installation = Awaited<
-	ReturnType<typeof getGitHubOrganizationInstallation>
->;
 
 export class GitHubIntegrationError extends Error {
 	constructor(
@@ -76,34 +65,6 @@ function parseCredentials(payload: Buffer) {
 		refreshToken:
 			typeof parsed.refreshToken === "string" ? parsed.refreshToken : null,
 	} satisfies GitHubCredentials;
-}
-
-async function organizationInstallation() {
-	try {
-		const installation = await getGitHubOrganizationInstallation(
-			env.GITHUB_ORGANIZATION,
-		);
-		if (
-			installation.account.type !== "Organization" ||
-			installation.account.login.toLowerCase() !==
-				env.GITHUB_ORGANIZATION.toLowerCase() ||
-			installation.suspended_at
-		) {
-			throw new GitHubIntegrationError(
-				"github_installation_unavailable",
-				`The GitHub App installation for ${env.GITHUB_ORGANIZATION} is unavailable.`,
-			);
-		}
-		return installation;
-	} catch (error) {
-		if (error instanceof GitHubIntegrationError) throw error;
-		if (error instanceof GitHubApiError && error.status === 404)
-			throw new GitHubIntegrationError(
-				"github_installation_missing",
-				`Legacy Hosting Deployments is not installed on ${env.GITHUB_ORGANIZATION}.`,
-			);
-		throw error;
-	}
 }
 
 async function activeConnection(userId: string) {
@@ -174,46 +135,27 @@ async function accessToken(connection: ConnectionRow) {
 	}
 }
 
-export function validateGitHubUserRepositoryAccess(
-	memberships: GitHubOrganizationMembership[],
-	repositories: GitHubRepository[],
-	organization = env.GITHUB_ORGANIZATION,
-) {
-	const active = hasActiveGitHubOrganizationMembership(
-		memberships,
-		organization,
-	);
-	if (!active)
-		throw new GitHubIntegrationError(
-			"github_organization_membership_required",
-			`Your GitHub account is not an active member of ${organization}.`,
-		);
-	const visibleRepositories = githubRepositoriesForOrganization(
-		repositories,
-		organization,
-	);
-	if (visibleRepositories.length === 0)
-		throw new GitHubIntegrationError(
-			"github_no_repository_access",
-			`Your GitHub account does not have access to any ${organization} repositories available to the GitHub App.`,
-		);
-	return visibleRepositories;
-}
-
-async function repositoriesForUser(installation: Installation, token: string) {
+async function installationsForUser(token: string) {
 	try {
-		const memberships = await listGitHubUserOrganizations(token);
-		return validateGitHubUserRepositoryAccess(
-			memberships,
-			await listGitHubUserInstallationRepositories(installation.id, token),
-		);
+		const access = await listGitHubUserInstallationAccess(token);
+		if (access.length === 0)
+			throw new GitHubIntegrationError(
+				"github_installation_access_required",
+				"Install Legacy Hosting Deployments on your GitHub account or an organization you can access, then connect again.",
+			);
+		if (!access.some((entry) => entry.repositories.length > 0))
+			throw new GitHubIntegrationError(
+				"github_no_repository_access",
+				"Your GitHub account has no repositories with read and write access available to Legacy Hosting Deployments.",
+			);
+		return access;
 	} catch (error) {
 		if (error instanceof GitHubIntegrationError) throw error;
 		const code = githubAuthorizationErrorCode(error);
 		if (code === "github_sso_required")
 			throw new GitHubIntegrationError(
 				code,
-				`Authorize Legacy Hosting Deployments for ${env.GITHUB_ORGANIZATION} SSO, then reconnect GitHub.`,
+				"Authorize Legacy Hosting Deployments for your organization's SSO, then reconnect GitHub.",
 			);
 		if (code)
 			throw new GitHubIntegrationError(
@@ -224,10 +166,20 @@ async function repositoriesForUser(installation: Installation, token: string) {
 	}
 }
 
+function primaryInstallationId(access: GitHubUserInstallationAccess[]) {
+	const primary = access[0];
+	if (!primary)
+		throw new GitHubIntegrationError(
+			"github_installation_access_required",
+			"No GitHub App installation is available to this user.",
+		);
+	return primary.installation.id;
+}
+
 async function saveUserConnection(
 	userId: string,
 	githubUser: { id: number; login: string },
-	installation: Installation,
+	installationId: number,
 	tokens: GitHubUserTokens,
 ) {
 	const [identityRows] = await database().query<
@@ -261,7 +213,7 @@ async function saveUserConnection(
 			[
 				githubUser.id,
 				githubUser.login,
-				installation.id,
+				installationId,
 				encrypted,
 				expiration(tokens.expiresIn),
 				expiration(tokens.refreshTokenExpiresIn),
@@ -279,118 +231,145 @@ async function saveUserConnection(
 				userId,
 				githubUser.id,
 				githubUser.login,
-				installation.id,
+				installationId,
 				encrypted,
 				expiration(tokens.expiresIn),
 				expiration(tokens.refreshTokenExpiresIn),
 			],
 		);
 	}
-	if (
-		existingRows[0] &&
-		String(existingRows[0].githubUserId) !== String(githubUser.id)
-	)
+	if (existingRows[0]) {
 		await database().execute(
 			"DELETE FROM github_user_repository_access WHERE connection_id=UUID_TO_BIN(?)",
 			[connectionId],
 		);
+		await database().execute(
+			"DELETE FROM github_user_installations WHERE connection_id=UUID_TO_BIN(?)",
+			[connectionId],
+		);
+	}
 	return connectionId;
 }
 
 async function synchronizeRepositoryAccess(
 	connectionId: string,
 	teamId: string,
-	installation: Installation,
-	repositories: GitHubRepository[],
+	access: GitHubUserInstallationAccess[],
 ) {
-	const integrationId = randomUUID();
 	const connection = await database().getConnection();
 	try {
 		await connection.beginTransaction();
 		await connection.execute(
-			`INSERT INTO integrations
+			`DELETE a FROM github_user_repository_access a
+			 JOIN integrations i ON i.id=a.integration_id
+			 WHERE a.connection_id=UUID_TO_BIN(?) AND i.team_id=UUID_TO_BIN(?)`,
+			[connectionId, teamId],
+		);
+		await connection.execute(
+			`DELETE u FROM github_user_installations u
+			 JOIN integrations i ON i.id=u.integration_id
+			 WHERE u.connection_id=UUID_TO_BIN(?) AND i.team_id=UUID_TO_BIN(?)`,
+			[connectionId, teamId],
+		);
+		const integrationIds: string[] = [];
+		for (const { installation, repositories } of access) {
+			const integrationId = randomUUID();
+			await connection.execute(
+				`INSERT INTO integrations
        (id,team_id,provider,auth_method,connection_scope,external_account_id,display_name,
         encrypted_credentials,metadata,disconnected_at)
        VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'github','oauth','customer',?,?,?,?,NULL)
        ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),metadata=VALUES(metadata),
          disconnected_at=NULL,updated_at=CURRENT_TIMESTAMP(3)`,
-			[
-				integrationId,
-				teamId,
-				String(installation.id),
-				installation.account.login,
-				encryptSecret(JSON.stringify({ installationId: installation.id })),
-				JSON.stringify({
-					accountId: installation.account.id,
-					accountType: installation.account.type,
-					repositorySelection: installation.repository_selection,
-					permissions: installation.permissions,
-				}),
-			],
-		);
-		const [integrationRows] = await connection.query<
-			(RowDataPacket & { id: string })[]
-		>(
-			`SELECT BIN_TO_UUID(id) AS id FROM integrations
+				[
+					integrationId,
+					teamId,
+					String(installation.id),
+					installation.account.login,
+					encryptSecret(JSON.stringify({ installationId: installation.id })),
+					JSON.stringify({
+						accountId: installation.account.id,
+						accountType: installation.account.type,
+						repositorySelection: installation.repository_selection,
+						permissions: installation.permissions,
+					}),
+				],
+			);
+			const [integrationRows] = await connection.query<
+				(RowDataPacket & { id: string })[]
+			>(
+				`SELECT BIN_TO_UUID(id) AS id FROM integrations
        WHERE team_id=UUID_TO_BIN(?) AND provider='github' AND external_account_id=? LIMIT 1`,
-			[teamId, String(installation.id)],
-		);
-		const storedIntegrationId = integrationRows[0]?.id;
-		if (!storedIntegrationId)
-			throw new Error("GitHub integration could not be stored");
+				[teamId, String(installation.id)],
+			);
+			const storedIntegrationId = integrationRows[0]?.id;
+			if (!storedIntegrationId)
+				throw new Error("GitHub integration could not be stored");
+			integrationIds.push(storedIntegrationId);
 
-		await connection.execute(
-			`INSERT INTO integration_resources
+			await connection.execute(
+				`INSERT INTO integration_resources
        (id,integration_id,resource_type,external_resource_id,display_name,enabled,metadata)
        VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'account',?,?,TRUE,?)
        ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),enabled=TRUE,
          metadata=VALUES(metadata),updated_at=CURRENT_TIMESTAMP(3)`,
-			[
-				randomUUID(),
-				storedIntegrationId,
-				String(installation.account.id),
-				installation.account.login,
-				JSON.stringify({ type: installation.account.type }),
-			],
-		);
-		await connection.execute(
-			`DELETE FROM github_user_repository_access
-       WHERE connection_id=UUID_TO_BIN(?) AND integration_id=UUID_TO_BIN(?)`,
-			[connectionId, storedIntegrationId],
-		);
-		for (const repository of repositories) {
+				[
+					randomUUID(),
+					storedIntegrationId,
+					String(installation.account.id),
+					installation.account.login,
+					JSON.stringify({ type: installation.account.type }),
+				],
+			);
 			await connection.execute(
-				`INSERT INTO integration_resources
+				`INSERT INTO github_user_installations
+				 (connection_id,integration_id,installation_id,account_login,account_type,
+				  repository_selection,permissions)
+				 VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?)`,
+				[
+					connectionId,
+					storedIntegrationId,
+					installation.id,
+					installation.account.login,
+					installation.account.type,
+					installation.repository_selection,
+					JSON.stringify(installation.permissions),
+				],
+			);
+			for (const repository of repositories) {
+				await connection.execute(
+					`INSERT INTO integration_resources
          (id,integration_id,resource_type,external_resource_id,display_name,enabled,metadata)
          VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'repository',?,?,TRUE,?)
          ON DUPLICATE KEY UPDATE display_name=VALUES(display_name),enabled=TRUE,
            metadata=VALUES(metadata),updated_at=CURRENT_TIMESTAMP(3)`,
-				[
-					randomUUID(),
-					storedIntegrationId,
-					String(repository.id),
-					repository.full_name,
-					JSON.stringify({
-						private: repository.private,
-						defaultBranch: repository.default_branch,
-						htmlUrl: repository.html_url,
-					}),
-				],
-			);
-			await connection.execute(
-				`INSERT INTO github_user_repository_access
+					[
+						randomUUID(),
+						storedIntegrationId,
+						String(repository.id),
+						repository.full_name,
+						JSON.stringify({
+							private: repository.private,
+							defaultBranch: repository.default_branch,
+							htmlUrl: repository.html_url,
+						}),
+					],
+				);
+				await connection.execute(
+					`INSERT INTO github_user_repository_access
          (connection_id,integration_id,repository_id,permissions)
          VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?)`,
-				[
-					connectionId,
-					storedIntegrationId,
-					String(repository.id),
-					JSON.stringify(repository.permissions ?? {}),
-				],
-			);
+					[
+						connectionId,
+						storedIntegrationId,
+						String(repository.id),
+						JSON.stringify(repository.permissions ?? {}),
+					],
+				);
+			}
 		}
 		await connection.commit();
-		return storedIntegrationId;
+		return integrationIds;
 	} catch (error) {
 		await connection.rollback();
 		throw error;
@@ -432,26 +411,24 @@ export async function authorizeGitHubUser(
 	teamId: string,
 	authorizationCode: string,
 ) {
-	const installation = await organizationInstallation();
 	const tokens = await exchangeGitHubUserCode(authorizationCode);
 	const githubUser = await getAuthenticatedGitHubUser(tokens.accessToken);
-	const repositories = await repositoriesForUser(
-		installation,
-		tokens.accessToken,
+	const installationAccess = await installationsForUser(tokens.accessToken);
+	const repositories = installationAccess.flatMap(
+		(entry) => entry.repositories,
 	);
 	const connectionId = await saveUserConnection(
 		userId,
 		githubUser,
-		installation,
+		primaryInstallationId(installationAccess),
 		tokens,
 	);
-	const integrationId = await synchronizeRepositoryAccess(
+	const integrationIds = await synchronizeRepositoryAccess(
 		connectionId,
 		teamId,
-		installation,
-		repositories,
+		installationAccess,
 	);
-	return { connectionId, integrationId, githubUser, repositories };
+	return { connectionId, integrationIds, githubUser, repositories };
 }
 
 export async function refreshGitHubRepositoriesForUser(
@@ -459,19 +436,17 @@ export async function refreshGitHubRepositoriesForUser(
 	userId: string,
 ) {
 	const connection = await activeConnection(userId);
-	const installation = await organizationInstallation();
 	const token = await accessToken(connection);
-	const repositories = await repositoriesForUser(installation, token);
+	const installationAccess = await installationsForUser(token);
 	await database().execute(
 		`UPDATE github_user_connections SET installation_id=?,updated_at=CURRENT_TIMESTAMP(3)
      WHERE id=UUID_TO_BIN(?)`,
-		[installation.id, connection.id],
+		[primaryInstallationId(installationAccess), connection.id],
 	);
 	await synchronizeRepositoryAccess(
 		connection.id,
 		teamId,
-		installation,
-		repositories,
+		installationAccess,
 	);
 	return visibleRepositories(teamId, userId);
 }
@@ -553,6 +528,10 @@ export async function disconnectGitHubUser(
 			[githubConnection.id],
 		);
 		await connection.execute(
+			`DELETE FROM github_user_installations WHERE connection_id=UUID_TO_BIN(?)`,
+			[githubConnection.id],
+		);
+		await connection.execute(
 			`UPDATE github_user_connections SET encrypted_credentials=?,token_expires_at=NULL,
          refresh_token_expires_at=NULL,disconnected_at=CURRENT_TIMESTAMP(3),
          updated_at=CURRENT_TIMESTAMP(3) WHERE id=UUID_TO_BIN(?)`,
@@ -577,8 +556,4 @@ export async function disconnectGitHubUser(
 	} finally {
 		connection.release();
 	}
-}
-
-export async function ensureGitHubOrganizationInstallation() {
-	return organizationInstallation();
 }

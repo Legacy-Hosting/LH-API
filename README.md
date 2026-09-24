@@ -73,11 +73,11 @@ Use a GitHub App instead of a classic OAuth app or personal access token. Config
 - Webhook URL: `https://api.legacyhosting.xyz/api/v1/integrations/github/webhook`
 - Repository permissions: Metadata (read) and Contents (read-only)
 - Webhook event: Push
-- Organization installation: install once on `NextarchStudio`; an organization owner controls its repository selection
+- Install the App once on each personal account or organization that should grant repository access; account and organization owners control repository selection
 
-Set `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY_BASE64`, `GITHUB_WEBHOOK_SECRET`, and `GITHUB_ORGANIZATION`. `GITHUB_OAUTH_REDIRECT_URI` should match the configured user authorization callback URL.
+Set `GITHUB_APP_ID`, `GITHUB_APP_SLUG`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_PRIVATE_KEY_BASE64`, and `GITHUB_WEBHOOK_SECRET`. `GITHUB_OAUTH_REDIRECT_URI` should match the configured user authorization callback URL.
 
-Organization installation and user authorization are separate. Every panel user authorizes the existing GitHub App through the OAuth web flow; no OAuth scopes are requested because GitHub App user access tokens inherit the App's fine-grained permissions. The encrypted user token is used with `/user/installations/{installation_id}/repositories`, which returns only the intersection of repositories available to the organization installation and repositories the user can access through membership, a team, or direct permission. Expiring user tokens are refreshed and kept encrypted at rest.
+App installation and user authorization are separate. Every panel user authorizes the GitHub App through the OAuth web flow; no OAuth scopes are requested because GitHub App user access tokens inherit the App's fine-grained permissions. The encrypted user token discovers the App installations available to that GitHub user and calls `/user/installations/{installation_id}/repositories` for each personal account or organization. Only repositories where GitHub reports both read and write permission are exposed in the panel. Expiring user tokens are refreshed and kept encrypted at rest.
 
 Deploys never use the user's token. Installation tokens are generated only when needed, expire through GitHub, and are restricted to the selected repository. Existing repository resources remain intact when users connect or disconnect. The webhook delivery ID is persisted for idempotency, so a redelivered push does not queue duplicate deployments.
 
