@@ -24,6 +24,24 @@ const schema = z
     .transform((value) => value === "true"),
   DATABASE_URL: z.string().min(1).optional(),
   DATABASE_SSL_CA: z.string().min(1).optional(),
+  DATABASE_CONNECT_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(30_000)
+    .default(5_000),
+  DATABASE_HEALTH_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(500)
+    .max(10_000)
+    .default(3_000),
+  DATABASE_HEALTH_INTERVAL_MS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(60_000)
+    .default(5_000),
   SESSION_COOKIE_DOMAIN: z.string().optional(),
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   WEBAUTHN_RP_NAME: z.string().default("Legacy Hosting"),

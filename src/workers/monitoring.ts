@@ -308,8 +308,12 @@ async function monitorResourceLimits() {
   const [applications] = await database().query<LimitRow[]>(
     `SELECT BIN_TO_UUID(a.id) AS id,BIN_TO_UUID(a.team_id) AS teamId,a.name,
             m.cpu_percent AS cpu,m.memory_bytes AS memory,m.storage_bytes AS storage,
-            (SELECT COALESCE(SUM(monthly.traffic_bytes),0) FROM application_metrics monthly
-             WHERE monthly.application_id=a.id AND monthly.recorded_at>=DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01')) AS traffic,
+            CASE
+              WHEN COALESCE(l.traffic_bytes_monthly,s.default_traffic_bytes_monthly) IS NULL THEN 0
+              ELSE (SELECT COALESCE(SUM(monthly.traffic_bytes),0) FROM application_metrics monthly
+                    WHERE monthly.application_id=a.id
+                      AND monthly.recorded_at>=DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))
+            END AS traffic,
             COALESCE(l.cpu_percent,s.default_cpu_percent) AS cpuLimit,
             COALESCE(l.memory_bytes,s.default_memory_bytes) AS memoryLimit,
             COALESCE(l.storage_bytes,s.default_storage_bytes) AS storageLimit,

@@ -14,7 +14,7 @@ test(
     const [migrations] = await database().query<
       (RowDataPacket & { total: number })[]
     >("SELECT COUNT(*) AS total FROM schema_migrations");
-    assert.equal(Number(migrations[0]?.total), 19);
+    assert.equal(Number(migrations[0]?.total), 20);
 
     const [tables] = await database().query<
       (RowDataPacket & { tableName: string })[]
@@ -26,6 +26,24 @@ test(
         'github_user_connections','github_user_installations','github_user_repository_access')`,
     );
     assert.equal(tables.length, 11);
+  },
+);
+
+test(
+  "application status lookups use their composite indexes",
+  { skip: !process.env.DATABASE_URL },
+  async () => {
+    const [indexes] = await database().query<
+      (RowDataPacket & { indexName: string })[]
+    >(
+      `SELECT DISTINCT index_name AS indexName
+       FROM information_schema.statistics
+       WHERE table_schema=DATABASE() AND index_name IN
+       ('ix_pm2_snapshot_node_process_recorded',
+        'ix_application_team_active_created',
+        'ix_application_metric_traffic')`,
+    );
+    assert.equal(indexes.length, 3);
   },
 );
 

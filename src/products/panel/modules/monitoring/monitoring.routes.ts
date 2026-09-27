@@ -333,8 +333,12 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
               s.default_traffic_bytes_monthly AS defaultTrafficLimit,
               m.cpu_percent AS currentCpu,m.memory_bytes AS currentMemory,m.storage_bytes AS currentStorage,
               m.process_status AS processStatus,m.recorded_at AS metricRecordedAt,
-              (SELECT COALESCE(SUM(monthly.traffic_bytes),0) FROM application_metrics monthly
-               WHERE monthly.application_id=a.id AND monthly.recorded_at>=DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01')) AS monthlyTraffic
+              CASE
+                WHEN COALESCE(l.traffic_bytes_monthly,s.default_traffic_bytes_monthly) IS NULL THEN 0
+                ELSE (SELECT COALESCE(SUM(monthly.traffic_bytes),0) FROM application_metrics monthly
+                      WHERE monthly.application_id=a.id
+                        AND monthly.recorded_at>=DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))
+              END AS monthlyTraffic
        FROM applications a JOIN domains d ON d.id=a.domain_id JOIN nodes n ON n.id=a.node_id
        LEFT JOIN team_monitoring_settings s ON s.team_id=a.team_id
        LEFT JOIN application_health_checks h ON h.application_id=a.id

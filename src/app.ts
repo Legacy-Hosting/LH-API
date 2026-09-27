@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import Fastify, { LogController } from "fastify";
 import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
@@ -19,6 +19,9 @@ import { enforceBrowserRequestSecurity } from "./shared/security/csrf.js";
 export async function buildApp() {
   const app = Fastify({
     logger: true,
+    logController: new LogController({
+      disableRequestLogging: env.NODE_ENV === "production",
+    }),
     trustProxy: env.TRUST_PROXY,
     bodyLimit: env.BODY_LIMIT_BYTES,
     genReqId: () => randomUUID(),
@@ -46,6 +49,19 @@ export async function buildApp() {
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   });
   app.addHook("preHandler", enforceBrowserRequestSecurity);
+  app.addHook("onResponse", async (request, reply) => {
+    if (env.NODE_ENV === "production" && reply.elapsedTime >= 1_000) {
+      request.log.warn(
+        {
+          method: request.method,
+          route: request.routeOptions.url,
+          statusCode: reply.statusCode,
+          elapsedMs: Math.round(reply.elapsedTime),
+        },
+        "Slow request",
+      );
+    }
+  });
 
   app.setErrorHandler((error, request, reply) => {
     const possibleRateLimitError = error as unknown;
@@ -92,7 +108,7 @@ export async function buildApp() {
   app.get("/health", async () => ({
     status: "ok",
     database: await databaseStatus(),
-    version: "1.0.29",
+    version: "1.0.30",
   }));
   app.get("/api/v1", async () => ({
     name: "Legacy Hosting API",
