@@ -37,6 +37,7 @@ test("audit cursors are opaque, round-trip safely, and reject invalid data", () 
 test("Hub audit endpoint requires an allowed staff role and validates cursors", async () => {
   const app = Fastify();
   await app.register(auditRoutes, {
+    internalToken: "h".repeat(32),
     tokenVerifier: async (token) => ({
       sub: "staff-1",
       roles: token === "support-token" ? ["support"] : ["developer"],
@@ -73,6 +74,14 @@ test("Hub audit endpoint requires an allowed staff role and validates cursors", 
     assert.deepEqual(allowed.json(), {
       data: { events: [], nextCursor: null },
     });
+
+    const internal = await app.inject({
+      method: "GET",
+      url: "/audit-events?limit=25",
+      headers: { "x-lh-hub-token": "h".repeat(32) },
+    });
+    assert.equal(internal.statusCode, 200);
+    assert.deepEqual(internal.json(), { data: { events: [], nextCursor: null } });
   } finally {
     await app.close();
   }

@@ -54,6 +54,7 @@ test("operations summary normalizes counts and computes the 24 hour success rate
 test("Hub operations endpoint permits operational roles without granting support access", async () => {
   const app = Fastify();
   await app.register(operationsRoutes, {
+    internalToken: "h".repeat(32),
     tokenVerifier: async (token) => ({
       sub: "staff-1",
       roles: token === "infrastructure-token" ? ["infrastructure"] : ["support"],
@@ -79,6 +80,14 @@ test("Hub operations endpoint permits operational roles without granting support
     assert.equal(allowed.statusCode, 200);
     assert.deepEqual(allowed.json().data, summary);
     assert.equal(allowed.headers["cache-control"], "no-store");
+
+    const internal = await app.inject({
+      method: "GET",
+      url: "/operations",
+      headers: { "x-lh-hub-token": "h".repeat(32) },
+    });
+    assert.equal(internal.statusCode, 200);
+    assert.deepEqual(internal.json().data, summary);
   } finally {
     await app.close();
   }

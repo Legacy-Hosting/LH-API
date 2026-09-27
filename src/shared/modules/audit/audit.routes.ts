@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from "fastify";
+import { timingSafeEqual } from "node:crypto";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { z } from "zod";
 import { env } from "../../../core/config/env.js";
@@ -20,6 +21,13 @@ const querySchema = z.object({
 
 export type HubAuditTokenVerifier = (token: string) => Promise<unknown>;
 export type AuditEventReader = (query: AuditQuery) => ReturnType<typeof readAuditEvents>;
+
+function validHubToken(value: string | string[] | undefined, expectedToken = env.HUB_INTERNAL_TOKEN) {
+  if (!expectedToken || typeof value !== "string") return false;
+  const supplied = Buffer.from(value);
+  const expected = Buffer.from(expectedToken);
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
 
 export function createHubAuditTokenVerifier(options: {
   issuer: string;
@@ -51,29 +59,33 @@ function configuredVerifier() {
 export const auditRoutes: FastifyPluginAsync<{
   tokenVerifier?: HubAuditTokenVerifier;
   reader?: AuditEventReader;
+  internalToken?: string;
 }> = async (app, options) => {
   const verifyToken = options.tokenVerifier ?? configuredVerifier();
   const reader = options.reader ?? readAuditEvents;
 
   app.get("/audit-events", async (request, reply) => {
     reply.header("Cache-Control", "no-store");
+    const internal = validHubToken(request.headers["x-lh-hub-token"], options.internalToken);
     const authorization = request.headers.authorization;
-    if (!authorization?.startsWith("Bearer ")) {
+    if (!internal && !authorization?.startsWith("Bearer ")) {
       return reply.status(401).send({ error: "authentication_required" });
     }
-    if (!verifyToken) {
+    if (!internal && !verifyToken) {
       return reply.status(503).send({ error: "sso_not_configured" });
     }
-    let claims: z.infer<typeof claimsSchema>;
-    try {
-      claims = claimsSchema.parse(
-        await verifyToken(authorization.slice("Bearer ".length).trim()),
-      );
-    } catch {
-      return reply.status(401).send({ error: "invalid_access_token" });
-    }
-    if (!claims.roles.some((role) => allowedRoles.has(role))) {
-      return reply.status(403).send({ error: "audit_access_required" });
+    if (!internal) {
+      let claims: z.infer<typeof claimsSchema>;
+      try {
+        claims = claimsSchema.parse(
+          await verifyToken!(authorization!.slice("Bearer ".length).trim()),
+        );
+      } catch {
+        return reply.status(401).send({ error: "invalid_access_token" });
+      }
+      if (!claims.roles.some((role) => allowedRoles.has(role))) {
+        return reply.status(403).send({ error: "audit_access_required" });
+      }
     }
     const query = querySchema.safeParse(request.query);
     if (!query.success) {

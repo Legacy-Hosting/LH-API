@@ -49,6 +49,7 @@ const schema = z
   SSO_ISSUER: z.string().url().optional(),
   SSO_JWKS_URL: z.string().url().optional(),
   HUB_SSO_AUDIENCE: z.string().min(1).max(200).default("lh-hub"),
+  HUB_INTERNAL_TOKEN: z.string().min(32).optional(),
   SSO_IDENTITY_BRIDGE_TOKEN: z.string().min(32).optional(),
   SSO_CLIENT_ID: z.string().regex(/^[a-z0-9][a-z0-9_-]{2,63}$/).optional(),
   SSO_CLIENT_SECRET: z.string().min(32).optional(),
@@ -103,6 +104,7 @@ const schema = z
     }
     if (value.NODE_ENV === "production") {
       for (const key of [
+        "HUB_INTERNAL_TOKEN",
         "SSO_INTERNAL_URL",
         "SSO_ISSUER",
         "SSO_JWKS_URL",
