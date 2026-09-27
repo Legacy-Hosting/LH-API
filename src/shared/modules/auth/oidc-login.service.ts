@@ -5,6 +5,7 @@ import { env } from "../../../core/config/env.js";
 import { database } from "../../../core/database/mysql.js";
 import { decryptSecret, encryptSecret } from "../../security/secrets.js";
 import { randomToken, tokenHash } from "./auth.crypto.js";
+import { createLogoutHint } from "./logout-hint.js";
 
 const loginRequestLifetimeSeconds = 600;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -37,6 +38,8 @@ type OidcLoginOptions = {
   panelOrigin?: string;
   redirectUri?: string;
   resource?: string;
+  clientId?: string;
+  clientSecret?: string;
 };
 
 type LoginRequestRow = RowDataPacket & {
@@ -278,13 +281,21 @@ export async function completeOidcLogin(
 
 export async function beginOidcLogout(options: OidcLoginOptions = {}) {
   const issuer = requireConfiguration(options.issuer ?? env.SSO_ISSUER);
-  const clientId = requireConfiguration(env.SSO_CLIENT_ID);
+  const clientId = requireConfiguration(options.clientId ?? env.SSO_CLIENT_ID);
+  const clientSecret = requireConfiguration(options.clientSecret ?? env.SSO_CLIENT_SECRET);
   const panelOrigin = options.panelOrigin ?? env.PANEL_ORIGIN;
   try {
+    const postLogoutRedirectUri = new URL("/", panelOrigin).toString();
     const logoutUrl = oidc.buildEndSessionUrl(await oidcConfiguration(), {
       client_id: clientId,
-      post_logout_redirect_uri: new URL("/", panelOrigin).toString(),
+      post_logout_redirect_uri: postLogoutRedirectUri,
     });
+    logoutUrl.searchParams.set("logout_hint", createLogoutHint({
+      audience: issuer,
+      clientId,
+      clientSecret,
+      redirectUri: postLogoutRedirectUri,
+    }));
     if (logoutUrl.origin !== new URL(issuer).origin) {
       throw new OidcLoginError("invalid_sso_logout_url", 503);
     }

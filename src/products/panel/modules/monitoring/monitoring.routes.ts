@@ -52,6 +52,15 @@ const applicationConfigSchema = z
       storageGb: z.number().positive().max(1048576).nullable(),
       monthlyTrafficGb: z.number().positive().max(1048576).nullable(),
     }),
+    webhook: z.object({
+      enabled: z.boolean(),
+      url: z.union([
+        z.string().url().refine((value) => new URL(value).protocol === "https:", "Webhook URL must use HTTPS"),
+        z.literal(""),
+        z.null(),
+      ]).optional(),
+      secret: z.union([z.string().min(16).max(512), z.literal(""), z.null()]).optional(),
+    }).optional(),
   })
   .refine(
     (value) => value.health.expectedStatusMin <= value.health.expectedStatusMax,
@@ -333,6 +342,9 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
               s.default_traffic_bytes_monthly AS defaultTrafficLimit,
               m.cpu_percent AS currentCpu,m.memory_bytes AS currentMemory,m.storage_bytes AS currentStorage,
               m.process_status AS processStatus,m.recorded_at AS metricRecordedAt,
+              COALESCE(w.enabled,FALSE) AS applicationWebhookEnabled,
+              w.encrypted_webhook_url IS NOT NULL AS applicationWebhookConfigured,
+              w.encrypted_webhook_secret IS NOT NULL AS applicationWebhookSecretConfigured,
               CASE
                 WHEN COALESCE(l.traffic_bytes_monthly,s.default_traffic_bytes_monthly) IS NULL THEN 0
                 ELSE (SELECT COALESCE(SUM(monthly.traffic_bytes),0) FROM application_metrics monthly
@@ -343,6 +355,7 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
        LEFT JOIN team_monitoring_settings s ON s.team_id=a.team_id
        LEFT JOIN application_health_checks h ON h.application_id=a.id
        LEFT JOIN application_resource_limits l ON l.application_id=a.id
+       LEFT JOIN application_monitoring_webhooks w ON w.application_id=a.id
        LEFT JOIN application_metrics m ON m.id=(
          SELECT latest.id FROM application_metrics latest
          WHERE latest.application_id=a.id ORDER BY latest.id DESC LIMIT 1
@@ -378,6 +391,11 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
           storageGb: gb(row.currentStorage) ?? 0, monthlyTrafficGb: gb(row.monthlyTraffic) ?? 0,
           processStatus: row.processStatus ?? "unknown", recordedAt: row.metricRecordedAt,
         },
+        webhook: {
+          enabled: Boolean(row.applicationWebhookEnabled),
+          configured: Boolean(row.applicationWebhookConfigured),
+          secretConfigured: Boolean(row.applicationWebhookSecretConfigured),
+        },
       })),
     };
   });
@@ -390,6 +408,8 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
     const team = teamFrom(request);
     if (!canWrite(team.role))
       return reply.status(403).send({ error: "team_write_required" });
+    if (body.data.webhook && !canManage(team.role))
+      return reply.status(403).send({ error: "team_admin_required" });
     const [applications] = await database().query<RowDataPacket[]>(
       "SELECT 1 FROM applications WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND deleted_at IS NULL LIMIT 1",
       [params.data.applicationId, team.id],
@@ -421,6 +441,39 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
           bytesFromMb(body.data.limits.memoryMb), bytesFromGb(body.data.limits.storageGb),
           bytesFromGb(body.data.limits.monthlyTrafficGb)],
       );
+      if (body.data.webhook) {
+        const [existing] = await connection.query<
+          (RowDataPacket & { url: Buffer | null; secret: Buffer | null })[]
+        >(
+          `SELECT encrypted_webhook_url AS url,encrypted_webhook_secret AS secret
+           FROM application_monitoring_webhooks WHERE application_id=UUID_TO_BIN(?)
+           LIMIT 1 FOR UPDATE`,
+          [params.data.applicationId],
+        );
+        const webhookUrl = body.data.webhook.url === undefined
+          ? existing[0]?.url ?? null
+          : body.data.webhook.url
+            ? encryptSecret(body.data.webhook.url)
+            : null;
+        const webhookSecret = body.data.webhook.secret === undefined
+          ? existing[0]?.secret ?? null
+          : body.data.webhook.secret
+            ? encryptSecret(body.data.webhook.secret)
+            : null;
+        if (body.data.webhook.enabled && (!webhookUrl || !webhookSecret)) {
+          await connection.rollback();
+          return reply.status(400).send({ error: "webhook_url_and_secret_required" });
+        }
+        await connection.execute(
+          `INSERT INTO application_monitoring_webhooks
+             (application_id,enabled,encrypted_webhook_url,encrypted_webhook_secret)
+           VALUES (UUID_TO_BIN(?),?,?,?)
+           ON DUPLICATE KEY UPDATE enabled=VALUES(enabled),
+             encrypted_webhook_url=VALUES(encrypted_webhook_url),
+             encrypted_webhook_secret=VALUES(encrypted_webhook_secret)`,
+          [params.data.applicationId, body.data.webhook.enabled, webhookUrl, webhookSecret],
+        );
+      }
       await connection.commit();
     } catch (error) {
       await connection.rollback();

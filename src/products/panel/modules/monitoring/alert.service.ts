@@ -43,6 +43,12 @@ type AlertRow = RowDataPacket & {
   lastNotifiedAt: Date | null;
 };
 
+type WebhookSettings = {
+  enabled: number;
+  encryptedUrl: Buffer | null;
+  encryptedSecret: Buffer | null;
+};
+
 function stringArray(value: string | string[] | null) {
   if (Array.isArray(value)) return value.filter((item) => typeof item === "string");
   if (!value) return [];
@@ -99,6 +105,28 @@ async function fallbackRecipients(teamId: string) {
   return rows.map((row) => row.email);
 }
 
+async function webhookForAlert(settings: SettingsRow | undefined, input: AlertInput): Promise<WebhookSettings | undefined> {
+  if (input.resourceType === "node") {
+    return settings
+      ? {
+          enabled: settings.webhookEnabled,
+          encryptedUrl: settings.encryptedWebhookUrl,
+          encryptedSecret: settings.encryptedWebhookSecret,
+        }
+      : undefined;
+  }
+  const [rows] = await database().query<(
+    RowDataPacket & WebhookSettings
+  )[]>(
+    `SELECT enabled,encrypted_webhook_url AS encryptedUrl,
+            encrypted_webhook_secret AS encryptedSecret
+     FROM application_monitoring_webhooks
+     WHERE application_id=UUID_TO_BIN(?) LIMIT 1`,
+    [input.resourceId],
+  );
+  return rows[0];
+}
+
 async function dispatchExternal(
   settings: SettingsRow | undefined,
   input: AlertInput,
@@ -147,11 +175,12 @@ async function dispatchExternal(
     }
   }
 
-  if (settings?.webhookEnabled && settings.encryptedWebhookUrl) {
+  const webhook = await webhookForAlert(settings, input);
+  if (webhook?.enabled && webhook.encryptedUrl) {
     try {
-      const webhookUrl = decryptSecret(settings.encryptedWebhookUrl);
-      const secret = settings.encryptedWebhookSecret
-        ? decryptSecret(settings.encryptedWebhookSecret)
+      const webhookUrl = decryptSecret(webhook.encryptedUrl);
+      const secret = webhook.encryptedSecret
+        ? decryptSecret(webhook.encryptedSecret)
         : null;
       const signature = secret
         ? createHmac("sha256", secret).update(payload).digest("hex")
