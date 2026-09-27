@@ -225,11 +225,11 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         (RowDataPacket & {
           id: string;
           processName: string;
-          hostname: string;
+          hostname: string | null;
         })[]
       >(
         `SELECT BIN_TO_UUID(a.id) AS id,a.pm2_process_name AS processName,d.hostname
-         FROM applications a JOIN domains d ON d.id=a.domain_id
+         FROM applications a LEFT JOIN domains d ON d.id=a.domain_id
          WHERE a.node_id=UUID_TO_BIN(?) AND a.deleted_at IS NULL`,
         [nodeId],
       );
@@ -256,7 +256,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
             process?.cpuPercent ?? 0,
             process?.memoryBytes ?? 0,
             process?.storageBytes ?? null,
-            traffic.get(application.hostname) ?? 0,
+            application.hostname ? traffic.get(application.hostname) ?? 0 : 0,
           ],
         );
       }

@@ -29,10 +29,10 @@ export async function getApplicationDetails(
       branch: string;
       autoDeploy: number;
       runtime: string | Record<string, unknown> | null;
-      hostname: string;
-      rootDomain: string;
-      dnsStatus: string;
-      proxyStatus: string;
+      hostname: string | null;
+      rootDomain: string | null;
+      dnsStatus: string | null;
+      proxyStatus: string | null;
       certificateExpiresAt: Date | null;
       lastError: string | null;
       nodeId: string;
@@ -49,7 +49,7 @@ export async function getApplicationDetails(
             d.proxy_status AS proxyStatus,d.certificate_expires_at AS certificateExpiresAt,d.last_error AS lastError,
             BIN_TO_UUID(n.id) AS nodeId,n.name AS nodeName,n.status AS nodeStatus,
             a.created_at AS createdAt,a.updated_at AS updatedAt
-     FROM applications a JOIN domains d ON d.id=a.domain_id JOIN nodes n ON n.id=a.node_id
+     FROM applications a LEFT JOIN domains d ON d.id=a.domain_id JOIN nodes n ON n.id=a.node_id
      WHERE a.id=UUID_TO_BIN(?) AND a.team_id=UUID_TO_BIN(?) AND a.deleted_at IS NULL LIMIT 1`,
     [applicationId, teamId],
   );
@@ -142,6 +142,8 @@ export async function getApplicationDetails(
 
   return {
     ...application,
+    dnsStatus: application.dnsStatus ?? "not_applicable",
+    proxyStatus: application.proxyStatus ?? "not_applicable",
     autoDeploy: Boolean(application.autoDeploy),
     runtime: parseJson<Record<string, unknown>>(application.runtime),
     environment: environment[0].map((variable) => ({

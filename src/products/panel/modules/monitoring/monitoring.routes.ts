@@ -328,7 +328,7 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
       (RowDataPacket & Record<string, string | number | Date | null>)[]
     >(
       `SELECT BIN_TO_UUID(a.id) AS id,a.name,d.hostname,n.name AS nodeName,
-              COALESCE(h.enabled,TRUE) AS healthEnabled,COALESCE(h.path,'/') AS healthPath,
+              COALESCE(h.enabled,FALSE) AS healthEnabled,COALESCE(h.path,'/') AS healthPath,
               COALESCE(h.interval_seconds,60) AS healthIntervalSeconds,
               COALESCE(h.timeout_ms,10000) AS healthTimeoutMs,
               COALESCE(h.expected_status_min,200) AS expectedStatusMin,
@@ -351,7 +351,7 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
                       WHERE monthly.application_id=a.id
                         AND monthly.recorded_at>=DATE_FORMAT(UTC_TIMESTAMP(),'%Y-%m-01'))
               END AS monthlyTraffic
-       FROM applications a JOIN domains d ON d.id=a.domain_id JOIN nodes n ON n.id=a.node_id
+       FROM applications a LEFT JOIN domains d ON d.id=a.domain_id JOIN nodes n ON n.id=a.node_id
        LEFT JOIN team_monitoring_settings s ON s.team_id=a.team_id
        LEFT JOIN application_health_checks h ON h.application_id=a.id
        LEFT JOIN application_resource_limits l ON l.application_id=a.id
@@ -410,11 +410,13 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
       return reply.status(403).send({ error: "team_write_required" });
     if (body.data.webhook && !canManage(team.role))
       return reply.status(403).send({ error: "team_admin_required" });
-    const [applications] = await database().query<RowDataPacket[]>(
-      "SELECT 1 FROM applications WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND deleted_at IS NULL LIMIT 1",
+    const [applications] = await database().query<(RowDataPacket & { hasHostname: number })[]>(
+      "SELECT domain_id IS NOT NULL AS hasHostname FROM applications WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND deleted_at IS NULL LIMIT 1",
       [params.data.applicationId, team.id],
     );
     if (!applications[0]) return reply.status(404).send({ error: "application_not_found" });
+    if (body.data.health.enabled && !applications[0].hasHostname)
+      return reply.status(400).send({ error: "http_healthcheck_requires_hostname" });
 
     const connection = await database().getConnection();
     try {

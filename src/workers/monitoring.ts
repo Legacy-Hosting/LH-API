@@ -27,7 +27,8 @@ async function ensureMonitoringRows() {
   );
   await database().execute(
     `INSERT IGNORE INTO application_health_checks (application_id,next_check_at)
-     SELECT id,CURRENT_TIMESTAMP(3) FROM applications WHERE deleted_at IS NULL`,
+     SELECT id,CURRENT_TIMESTAMP(3) FROM applications
+     WHERE deleted_at IS NULL AND domain_id IS NOT NULL AND internal_port IS NOT NULL`,
   );
 }
 

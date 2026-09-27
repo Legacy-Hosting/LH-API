@@ -96,6 +96,39 @@ test("customers cannot supply PORT or expose a worker through HTTP", () => {
   );
 });
 
+test("background applications accept a private bot without a hostname or port", () => {
+  const bot = {
+    ...web,
+    name: "discord",
+    type: "bot" as const,
+    workingDirectory: ".",
+    executable: "pnpm" as const,
+    args: ["start"],
+    primary: false,
+    public: false,
+    routes: [],
+    environment: { NODE_ENV: "production" },
+  };
+  const parsed = createApplicationSchema.safeParse({
+    name: "lh-discord",
+    nodeId: base.nodeId,
+    repository: "Legacy-Hosting/LH-Discord",
+    branch: "main",
+    processes: [bot],
+    persistentPaths: [{ path: "var", type: "directory" }],
+  });
+  assert.equal(parsed.success, true);
+  assert.equal(updateApplicationSchema.safeParse({
+    name: "lh-discord",
+    branch: "main",
+    autoDeploy: true,
+    buildCommand: { command: "pnpm", args: ["build"] },
+    checkCommands: [],
+    persistentPaths: [{ path: "var", type: "directory" }],
+    processes: [bot],
+  }).success, true);
+});
+
 test("ports are assigned only to web and API processes without reusing occupied ports", () => {
   assert.deepEqual(
     allocateApplicationPorts(

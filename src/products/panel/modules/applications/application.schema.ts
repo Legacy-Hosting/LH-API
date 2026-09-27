@@ -165,11 +165,19 @@ function validateProcesses(
       routesByHostname.set(routeHost, routes);
     }
   }
-  if (primaryProcesses !== 1) {
+  const publicProcesses = processes.filter((process) => process.public);
+  if (publicProcesses.length > 0 && primaryProcesses !== 1) {
     context.addIssue({
       code: "custom",
       path: ["processes"],
       message: "Exactly one web or API process must be public",
+    });
+  }
+  if (publicProcesses.length === 0 && primaryProcesses !== 0) {
+    context.addIssue({
+      code: "custom",
+      path: ["processes"],
+      message: "Background applications cannot define a primary process",
     });
   }
 }
@@ -225,8 +233,8 @@ export const persistentFileWriteSchema = z.object({
 export const createApplicationSchema = z
   .object({
     name: applicationName,
-    domain: hostname,
-    rootDomain: hostname,
+    domain: hostname.optional(),
+    rootDomain: hostname.optional(),
     nodeId: z.string().uuid(),
     repository: z
       .string()
@@ -254,7 +262,22 @@ export const createApplicationSchema = z
   })
   .superRefine((value, context) => {
     validateProcesses(value.processes, context);
-    const hostnames = new Set<string>([value.domain]);
+    const publicApplication = value.processes.length === 0 || value.processes.some((process) => process.public);
+    if (publicApplication && (!value.domain || !value.rootDomain)) {
+      context.addIssue({
+        code: "custom",
+        path: ["domain"],
+        message: "Public applications require a Cloudflare zone and hostname",
+      });
+    }
+    if (!publicApplication && (value.domain || value.rootDomain || value.additionalHostnames.length > 0)) {
+      context.addIssue({
+        code: "custom",
+        path: ["domain"],
+        message: "Background applications do not use public hostnames",
+      });
+    }
+    const hostnames = new Set<string>(value.domain ? [value.domain] : []);
     const sharedHostnames = new Set<string>(value.additionalHostnames);
     for (const [index, additionalHostname] of value.additionalHostnames.entries()) {
       if (hostnames.has(additionalHostname)) {
