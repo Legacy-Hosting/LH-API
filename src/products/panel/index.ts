@@ -8,6 +8,7 @@ import { nodeRoutes } from "./modules/nodes/node.routes.js";
 import { overviewRoutes } from "./modules/overview/overview.routes.js";
 import { notificationRoutes } from "./modules/notifications/notification.routes.js";
 import { monitoringRoutes } from "./modules/monitoring/monitoring.routes.js";
+import { firewallRoutes } from "./modules/firewall/firewall.routes.js";
 
 export const panelProduct: FastifyPluginAsync = async (app) => {
   app.addHook("preHandler", requireSession);
@@ -19,4 +20,5 @@ export const panelProduct: FastifyPluginAsync = async (app) => {
   await app.register(deploymentRoutes);
   await app.register(notificationRoutes);
   await app.register(monitoringRoutes);
+  await app.register(firewallRoutes);
 };

@@ -33,7 +33,7 @@ test("readiness returns 503 when the database dependency is unavailable", async 
     assert.deepEqual(response.json(), {
       status: "degraded",
       database: "unavailable",
-      version: "1.2.1",
+      version: "1.2.2",
     });
   } finally {
     await degradedApp.close();

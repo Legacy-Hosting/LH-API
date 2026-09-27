@@ -51,6 +51,17 @@ Tags named `v*` run verification and place the immutable archive in `LH-Releases
 
 `LH-Agent` posts signed heartbeats to `POST /api/v1/agent/heartbeat`. Each node has an independent credential; the API stores only its SHA-256-derived authentication key and validates request age plus an HMAC signature before accepting metrics.
 
+Heartbeats also carry the public addresses currently banned by each node's
+Fail2Ban SSH jail. Migration `026_global_firewall_bans.sql` stores one global,
+audited denylist and seeds the four reviewed initial addresses. The heartbeat
+response returns the desired active rules plus short-lived unban tombstones;
+agents converge UFW within the normal 30-second heartbeat interval. Private,
+loopback, link-local, multicast, and documentation ranges are rejected. Only a
+platform administrator can view and remove entries through the Panel firewall
+routes. Removal is suppressed for 25 hours, just beyond the configured local
+24-hour ban, so a still-active or temporarily offline Fail2Ban node cannot
+immediately recreate a false-positive ban.
+
 Node registration keeps public and private network identities separate. Each node has a public FQDN, optional private FQDN, dedicated IPv4 and IPv6 fields for both networks, and an independent application CNAME target. At least one public IP address is required.
 
 Agent v1 signatures include a one-time UUID nonce persisted in MySQL, preventing a captured signed request from being replayed within the timestamp window. The agent also sends its legacy signature during the rolling upgrade. Keep `ALLOW_LEGACY_AGENT_SIGNATURES=true` only until every node runs agent v1, then set it to `false`.

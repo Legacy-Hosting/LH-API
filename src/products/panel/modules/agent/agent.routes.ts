@@ -16,6 +16,11 @@ import {
   nodeAgentModes,
   type NodeAgentMode,
 } from "../nodes/node-modes.js";
+import {
+  firewallBanReportSchema,
+  readGlobalFirewallPolicy,
+  recordGlobalFirewallBans,
+} from "../firewall/firewall.service.js";
 
 const processSchema = z.object({
   pm2Id: z.number().int().nullable(),
@@ -55,6 +60,7 @@ export const heartbeatSchema = z.object({
     )
     .max(1000)
     .default([]),
+  firewallBans: z.array(firewallBanReportSchema).max(1000).default([]),
 });
 
 const commandResultSchema = z.object({
@@ -255,6 +261,12 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         );
       }
 
+      await recordGlobalFirewallBans(
+        connection,
+        nodeId,
+        payload.data.firewallBans,
+      );
+
       await connection.commit();
     } catch (error) {
       await connection.rollback();
@@ -266,6 +278,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
     return reply.send({
       accepted: true,
       serverTime: new Date().toISOString(),
+      firewallPolicy: await readGlobalFirewallPolicy(),
     });
   });
 

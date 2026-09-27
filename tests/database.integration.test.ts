@@ -4,6 +4,11 @@ import { after, test } from "node:test";
 import type { RowDataPacket } from "mysql2";
 import { closeDatabase, database } from "../src/core/database/mysql.js";
 import { readOperationsSummary } from "../src/shared/modules/operations/operations.service.js";
+import {
+  readGlobalFirewallPolicy,
+  recordGlobalFirewallBans,
+  removeGlobalFirewallBan,
+} from "../src/products/panel/modules/firewall/firewall.service.js";
 
 after(async () => {
   await closeDatabase();
@@ -31,9 +36,88 @@ test(
        WHERE table_schema=DATABASE() AND table_name IN
        ('users','applications','application_processes','application_domains',
         'application_persistent_paths','node_metrics','application_health_checks','agent_request_nonces',
-        'github_user_connections','github_user_installations','github_user_repository_access')`,
+        'github_user_connections','github_user_installations','github_user_repository_access',
+        'global_firewall_bans')`,
     );
-    assert.equal(tables.length, 11);
+    assert.equal(tables.length, 12);
+  },
+);
+
+test(
+  "an administrative unban suppresses the still-active Fail2Ban report",
+  { skip: !process.env.DATABASE_URL },
+  async () => {
+    const userId = "26262626-2626-4626-8626-262626262626";
+    const teamId = "27272727-2727-4727-8727-272727272727";
+    const nodeId = "28282828-2828-4828-8828-282828282828";
+    const ipAddress = "8.8.8.8";
+    await database().execute(
+      `INSERT INTO users (id,email,display_name,status)
+       VALUES (UUID_TO_BIN(?),'firewall-test@example.invalid','Firewall Test','active')`,
+      [userId],
+    );
+    await database().execute(
+      "INSERT INTO teams (id,name,slug) VALUES (UUID_TO_BIN(?),'Firewall Test','firewall-test')",
+      [teamId],
+    );
+    await database().execute(
+      `INSERT INTO nodes
+       (id,team_id,name,public_fqdn,public_ip,cname_target,status,agent_mode)
+       VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),'firewall-test-node',
+               'firewall-test.legacyh.fyi','198.18.0.10',
+               'firewall-test.legacyh.fyi','online','monitor-only')`,
+      [nodeId, teamId],
+    );
+
+    try {
+      const first = await database().getConnection();
+      try {
+        await first.beginTransaction();
+        await recordGlobalFirewallBans(first, nodeId, [
+          { ipAddress, jail: "sshd" },
+        ]);
+        await first.commit();
+      } finally {
+        first.release();
+      }
+      assert.ok((await readGlobalFirewallPolicy()).activeIps.includes(ipAddress));
+
+      assert.equal(
+        await removeGlobalFirewallBan({
+          ipAddress,
+          reason: "False positive in integration test",
+          userId,
+          teamId,
+        }),
+        true,
+      );
+
+      const repeated = await database().getConnection();
+      try {
+        await repeated.beginTransaction();
+        await recordGlobalFirewallBans(repeated, nodeId, [
+          { ipAddress, jail: "sshd" },
+        ]);
+        await repeated.commit();
+      } finally {
+        repeated.release();
+      }
+      const policy = await readGlobalFirewallPolicy();
+      assert.equal(policy.activeIps.includes(ipAddress), false);
+      assert.equal(policy.unbanIps.includes(ipAddress), true);
+    } finally {
+      await database().execute(
+        "DELETE FROM global_firewall_bans WHERE ip_address=?",
+        [ipAddress],
+      );
+      await database().execute(
+        "DELETE FROM audit_events WHERE resource_type='ip_address' AND resource_id=?",
+        [ipAddress],
+      );
+      await database().execute("DELETE FROM nodes WHERE id=UUID_TO_BIN(?)", [nodeId]);
+      await database().execute("DELETE FROM teams WHERE id=UUID_TO_BIN(?)", [teamId]);
+      await database().execute("DELETE FROM users WHERE id=UUID_TO_BIN(?)", [userId]);
+    }
   },
 );
 
