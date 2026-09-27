@@ -16,21 +16,28 @@ repository_root=$(cd "$(dirname "$0")/../.." && pwd)
 releases_root=${2:-"$repository_root/../LH-Releases"}
 service_directory="$releases_root/LH-API"
 checksum_directory="$service_directory/SHA256"
+signature_directory="$service_directory/SIGNATURES"
 archive_name="lh-api-$version.tar.gz"
 archive="$service_directory/$archive_name"
 checksum="$checksum_directory/$archive_name.sha256"
+signature="$signature_directory/$archive_name.sig"
+signing_key=${RELEASE_SIGNING_PRIVATE_KEY_FILE:-}
 
 if [[ ! -d $releases_root/.git ]]; then
   echo "LH-Releases repository not found: $releases_root" >&2
   exit 1
 fi
-if [[ -e $archive || -e $checksum ]]; then
+if [[ -z $signing_key || ! -f $signing_key || -L $signing_key ]]; then
+  echo "RELEASE_SIGNING_PRIVATE_KEY_FILE must reference the protected Ed25519 private key" >&2
+  exit 1
+fi
+if [[ -e $archive || -e $checksum || -e $signature ]]; then
   echo "Release $version already exists and cannot be overwritten" >&2
   exit 1
 fi
 
 pnpm --dir "$repository_root" build
-mkdir -p "$service_directory" "$checksum_directory"
+mkdir -p "$service_directory" "$checksum_directory" "$signature_directory"
 
 temporary_directory=$(mktemp -d)
 trap 'rm -rf -- "$temporary_directory"' EXIT
@@ -49,6 +56,9 @@ chmod 0755 "$release_root"/ops/scripts/*.sh
 
 tar -C "$temporary_directory" -czf "$archive" "lh-api-$version"
 (cd "$service_directory" && sha256sum "$archive_name" > "SHA256/$archive_name.sha256")
+"$repository_root/ops/scripts/sign-release-artifact.sh" \
+  "$signing_key" "$archive" "$checksum" "$signature"
 
 echo "Created $archive"
 echo "Created $checksum"
+echo "Created $signature"

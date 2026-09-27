@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ ${EUID} -ne 0 || $# -ne 3 ]]; then
-  echo "Usage as root: $0 ARCHIVE CHECKSUM VERSION" >&2
+if [[ ${EUID} -ne 0 || $# -ne 4 ]]; then
+  echo "Usage as root: $0 ARCHIVE CHECKSUM SIGNATURE VERSION" >&2
   exit 2
 fi
+version=$4
+if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+  echo "Invalid API release version" >&2
+  exit 1
+fi
+verifier=/usr/local/lib/legacy-hosting-ops/verify-release-artifact.sh
+public_key=/etc/legacy-hosting/release-keys/lh-api.pub
+if [[ ! -x $verifier || ! -r $public_key ]]; then
+  echo "API release verifier or pinned public key is not installed" >&2
+  exit 1
+fi
+"$verifier" "$public_key" "$1" "$2" "$3"
 archive=$(readlink -f "$1")
-checksum=$(readlink -f "$2")
-version=$3
-if [[ ! -f $archive || ! -f $checksum || ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
-  echo "Invalid API release archive, checksum, or version" >&2
-  exit 1
-fi
-expected=$(awk 'NR==1 {print $1}' "$checksum")
-actual=$(sha256sum "$archive" | awk '{print $1}')
-if [[ ! $expected =~ ^[a-f0-9]{64}$ || $expected != "$actual" ]]; then
-  echo "API release checksum verification failed" >&2
-  exit 1
-fi
 
 base=/opt/legacy-hosting/api
 release="$base/releases/$version"

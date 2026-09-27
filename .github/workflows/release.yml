@@ -26,6 +26,7 @@ jobs:
           --health-retries=10
     env:
       RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+      RELEASE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY_B64 }}
       NODE_ENV: test
       DATABASE_URL: mysql://root:test-password@127.0.0.1:3306/legacyhosting
       CREDENTIAL_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
@@ -67,8 +68,14 @@ jobs:
       - name: Build immutable release
         shell: bash
         run: |
+          test -n "$RELEASE_SIGNING_PRIVATE_KEY_B64"
+          SIGNING_KEY=$(mktemp)
+          trap 'rm -f -- "$SIGNING_KEY"' EXIT
+          printf '%s' "$RELEASE_SIGNING_PRIVATE_KEY_B64" | base64 --decode > "$SIGNING_KEY"
+          chmod 0600 "$SIGNING_KEY"
           VERSION="${GITHUB_REF_NAME#v}"
-          service/ops/scripts/build-release.sh "$VERSION" "$GITHUB_WORKSPACE/releases"
+          RELEASE_SIGNING_PRIVATE_KEY_FILE="$SIGNING_KEY" \
+            service/ops/scripts/build-release.sh "$VERSION" "$GITHUB_WORKSPACE/releases"
       - name: Publish to LH-Releases
         if: env.RELEASES_TOKEN != ''
         working-directory: releases

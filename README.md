@@ -47,7 +47,7 @@ Panel logout revokes the local cookie and redirects the browser to SSO's discove
 
 The supported server baseline and PM2 deployment instructions are documented in `SERVER.md`.
 
-Tags named `v*` run verification and place the immutable archive in `LH-Releases/LH-API`. Its SHA-256 checksum is stored separately in `LH-Releases/LH-API/SHA256`.
+Tags named `v*` run verification and place the immutable archive in `LH-Releases/LH-API`. Its SHA-256 checksum is stored in `SHA256`, and its detached Ed25519 signature is stored in `SIGNATURES`. A release fails closed when `RELEASE_SIGNING_PRIVATE_KEY_B64` is unavailable. Deployment verifies both files against the API public key provisioned by `LH-Ops` before extracting the archive.
 
 `LH-Agent` posts signed heartbeats to `POST /api/v1/agent/heartbeat`. Each node has an independent credential; the API stores only its SHA-256-derived authentication key and validates request age plus an HMAC signature before accepting metrics.
 
