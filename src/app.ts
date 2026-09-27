@@ -10,13 +10,17 @@ import { databaseStatus } from "./core/database/mysql.js";
 import { billingProduct } from "./products/billing/index.js";
 import { panelProduct } from "./products/panel/index.js";
 import { agentRoutes } from "./products/panel/modules/agent/agent.routes.js";
-import { authRoutes } from "./shared/modules/auth/auth.routes.js";
+import { authRoutes, type AuthRouteOptions } from "./shared/modules/auth/auth.routes.js";
 import { teamRoutes } from "./shared/modules/teams/team.routes.js";
 import { integrationRoutes } from "./shared/modules/integrations/integration.routes.js";
 import { githubWebhookRoutes } from "./shared/modules/integrations/github-webhook.routes.js";
 import { enforceBrowserRequestSecurity } from "./shared/security/csrf.js";
 
-export async function buildApp() {
+type BuildAppOptions = {
+  auth?: AuthRouteOptions;
+};
+
+export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({
     logger: true,
     logController: new LogController({
@@ -108,7 +112,7 @@ export async function buildApp() {
   app.get("/health", async () => ({
     status: "ok",
     database: await databaseStatus(),
-    version: "1.0.33",
+    version: "1.0.34",
   }));
   app.get("/api/v1", async () => ({
     name: "Legacy Hosting API",
@@ -118,7 +122,7 @@ export async function buildApp() {
 
   await app.register(panelProduct, { prefix: "/api/v1/panel" });
   await app.register(agentRoutes, { prefix: "/api/v1/agent" });
-  await app.register(authRoutes, { prefix: "/api/v1/auth" });
+  await app.register(authRoutes, { prefix: "/api/v1/auth", ...options.auth });
   await app.register(teamRoutes, { prefix: "/api/v1/teams" });
   await app.register(integrationRoutes, { prefix: "/api/v1/integrations" });
   await app.register(githubWebhookRoutes, { prefix: "/api/v1/integrations" });

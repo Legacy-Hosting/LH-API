@@ -37,6 +37,8 @@ During the SSO migration, `POST /api/v1/auth/sso/continue` converts an authentic
 
 Configure `SSO_INTERNAL_URL` and `SSO_ISSUER` as `https://auth.legacyhosting.xyz`. On `ams3-api-01`, resolve that hostname to the SSO Droplet's private VPC address through `/etc/hosts` or internal DNS so the request reaches the Nginx route restricted to `10.110.0.0/20`, rather than Cloudflare. Use the same bridge token in API and SSO, but do not reuse the Discord internal token.
 
+The Panel OIDC client is implemented as a backend-for-frontend flow. `GET /api/v1/auth/oidc/start` creates a ten-minute, single-use state record with an encrypted PKCE verifier; the API callback validates state, nonce, PKCE, issuer, audience and the signed ID token before creating the existing HttpOnly Panel session. Configure the confidential `lh-panel` client through `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`, `SSO_REDIRECT_URI`, and `SSO_RESOURCE`. OAuth tokens and the client secret are never exposed to Panel JavaScript.
+
 The supported server baseline and PM2 deployment instructions are documented in `SERVER.md`.
 
 Tags named `v*` run verification and place the immutable archive in `LH-Releases/LH-API`. Its SHA-256 checksum is stored separately in `LH-Releases/LH-API/SHA256`.

@@ -25,6 +25,12 @@ import {
 import { createCsrfToken } from "../../security/csrf.js";
 import type { AuthenticatedRequest } from "./auth.types.js";
 import { createSsoLoginTicket, SsoBridgeError } from "./sso-bridge.service.js";
+import {
+  beginOidcLogin,
+  completeOidcLogin,
+  OidcLoginError,
+} from "./oidc-login.service.js";
+import { env } from "../../../core/config/env.js";
 
 const passkeyResponse = z.object({ id: z.string().min(1) }).passthrough();
 const registerOptionsBody = z.object({
@@ -52,6 +58,16 @@ const registrationSettingBody = z.object({
 const continueSsoBody = z.object({
   interactionUid: z.string().regex(/^[A-Za-z0-9_-]{16,255}$/),
 });
+const oidcStartQuery = z.object({
+  return_to: z.string().max(1_024).optional(),
+});
+
+export type AuthRouteOptions = {
+  oidcLogin?: {
+    begin: typeof beginOidcLogin;
+    complete: typeof completeOidcLogin;
+  };
+};
 
 function errorStatus(message: string) {
   if (["account_exists"].includes(message)) return 409;
@@ -78,8 +94,51 @@ async function guarded<T>(reply: FastifyReply, action: () => Promise<T>) {
   }
 }
 
-export const authRoutes: FastifyPluginAsync = async (app) => {
+export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, options) => {
+  const oidcLogin = options.oidcLogin ?? {
+    begin: beginOidcLogin,
+    complete: completeOidcLogin,
+  };
+
   app.get("/registration", async () => ({ data: await registrationStatus() }));
+
+  app.get("/oidc/start", {
+    config: { rateLimit: { max: 20, timeWindow: "1 minute" } },
+  }, async (request, reply) => {
+    const query = oidcStartQuery.safeParse(request.query);
+    if (!query.success) return reply.status(400).send({ error: "validation_error" });
+    try {
+      const login = await oidcLogin.begin(query.data.return_to);
+      return reply.header("Cache-Control", "no-store").send({ data: login });
+    } catch (error) {
+      if (error instanceof OidcLoginError) {
+        return reply.status(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
+  });
+
+  app.get("/oidc/callback", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } },
+  }, async (request, reply) => {
+    try {
+      const callbackBase = env.SSO_REDIRECT_URI ?? "http://localhost/api/v1/auth/oidc/callback";
+      const callbackUrl = new URL(request.raw.url ?? request.url, callbackBase);
+      const login = await oidcLogin.complete(callbackUrl);
+      await createSession(login.userId, request, reply);
+      return reply.header("Cache-Control", "no-store").redirect(login.returnUrl);
+    } catch (error) {
+      request.log.warn(
+        {
+          error: error instanceof Error ? error.message : "sso_callback_failed",
+        },
+        "SSO callback rejected",
+      );
+      const destination = new URL("/", env.PANEL_ORIGIN);
+      destination.searchParams.set("auth", "sso_failed");
+      return reply.header("Cache-Control", "no-store").redirect(destination.toString());
+    }
+  });
 
   app.post("/register/options", { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } }, async (request, reply) => {
     const body = registerOptionsBody.safeParse(request.body);

@@ -13,7 +13,7 @@ const schema = z
     .default("development"),
   HOST: z.string().default("0.0.0.0"),
   PORT: z.coerce.number().int().positive().default(8080),
-  PANEL_ORIGIN: z.string().default("http://localhost:5173"),
+  PANEL_ORIGIN: z.string().url().default("http://localhost:5173"),
   TRUST_PROXY: booleanFromString,
   BODY_LIMIT_BYTES: z.coerce.number().int().min(65536).max(10485760).default(1048576),
   RATE_LIMIT_MAX: z.coerce.number().int().min(10).max(10000).default(300),
@@ -48,6 +48,10 @@ const schema = z
   SSO_INTERNAL_URL: z.string().url().optional(),
   SSO_ISSUER: z.string().url().optional(),
   SSO_IDENTITY_BRIDGE_TOKEN: z.string().min(32).optional(),
+  SSO_CLIENT_ID: z.string().regex(/^[a-z0-9][a-z0-9_-]{2,63}$/).optional(),
+  SSO_CLIENT_SECRET: z.string().min(32).optional(),
+  SSO_REDIRECT_URI: z.string().url().optional(),
+  SSO_RESOURCE: z.string().url().optional(),
   SSO_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(15_000).default(5_000),
   WEBAUTHN_RP_NAME: z.string().default("Legacy Hosting"),
   WEBAUTHN_RP_ID: z.string().default("localhost"),
@@ -96,7 +100,15 @@ const schema = z
       });
     }
     if (value.NODE_ENV === "production") {
-      for (const key of ["SSO_INTERNAL_URL", "SSO_ISSUER", "SSO_IDENTITY_BRIDGE_TOKEN"] as const) {
+      for (const key of [
+        "SSO_INTERNAL_URL",
+        "SSO_ISSUER",
+        "SSO_IDENTITY_BRIDGE_TOKEN",
+        "SSO_CLIENT_ID",
+        "SSO_CLIENT_SECRET",
+        "SSO_REDIRECT_URI",
+        "SSO_RESOURCE",
+      ] as const) {
         if (!value[key]) {
           context.addIssue({
             code: "custom",
@@ -105,7 +117,12 @@ const schema = z
           });
         }
       }
-      for (const key of ["SSO_INTERNAL_URL", "SSO_ISSUER"] as const) {
+      for (const key of [
+        "SSO_INTERNAL_URL",
+        "SSO_ISSUER",
+        "SSO_REDIRECT_URI",
+        "SSO_RESOURCE",
+      ] as const) {
         const configured = value[key];
         if (configured && new URL(configured).protocol !== "https:") {
           context.addIssue({
