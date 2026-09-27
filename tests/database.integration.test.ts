@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readdir } from "node:fs/promises";
 import { after, test } from "node:test";
 import type { RowDataPacket } from "mysql2";
 import { closeDatabase, database } from "../src/core/database/mysql.js";
@@ -14,7 +15,13 @@ test(
     const [migrations] = await database().query<
       (RowDataPacket & { total: number })[]
     >("SELECT COUNT(*) AS total FROM schema_migrations");
-    assert.equal(Number(migrations[0]?.total), 20);
+    const migrationFiles = await readdir(
+      new URL("../database/migrations/", import.meta.url),
+    );
+    const expectedMigrations = migrationFiles.filter((file) =>
+      file.endsWith(".sql"),
+    ).length;
+    assert.equal(Number(migrations[0]?.total), expectedMigrations);
 
     const [tables] = await database().query<
       (RowDataPacket & { tableName: string })[]
