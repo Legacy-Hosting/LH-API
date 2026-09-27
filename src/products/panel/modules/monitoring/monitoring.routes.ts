@@ -345,7 +345,7 @@ export const monitoringRoutes: FastifyPluginAsync = async (app) => {
        LEFT JOIN application_resource_limits l ON l.application_id=a.id
        LEFT JOIN application_metrics m ON m.id=(
          SELECT latest.id FROM application_metrics latest
-         WHERE latest.application_id=a.id ORDER BY latest.recorded_at DESC LIMIT 1
+         WHERE latest.application_id=a.id ORDER BY latest.id DESC LIMIT 1
        )
        WHERE a.team_id=UUID_TO_BIN(?) AND a.deleted_at IS NULL ORDER BY a.name`,
       [team.id],

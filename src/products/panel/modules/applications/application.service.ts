@@ -86,7 +86,7 @@ export async function listApplications(teamId: string) {
      LEFT JOIN pm2_process_snapshots p ON p.id=(
        SELECT ps.id FROM pm2_process_snapshots ps
        WHERE ps.node_id=a.node_id AND ps.process_name=a.pm2_process_name
-       ORDER BY ps.recorded_at DESC LIMIT 1
+       ORDER BY ps.id DESC LIMIT 1
      )
      LEFT JOIN deployments dep ON dep.id=(
        SELECT dd.id FROM deployments dd WHERE dd.application_id=a.id ORDER BY dd.created_at DESC LIMIT 1

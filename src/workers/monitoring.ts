@@ -94,7 +94,7 @@ async function monitorProcesses() {
      LEFT JOIN team_monitoring_settings s ON s.team_id=a.team_id
      LEFT JOIN application_metrics m ON m.id=(
        SELECT latest.id FROM application_metrics latest
-       WHERE latest.application_id=a.id ORDER BY latest.recorded_at DESC LIMIT 1
+       WHERE latest.application_id=a.id ORDER BY latest.id DESC LIMIT 1
      )
      WHERE a.deleted_at IS NULL`,
   );
@@ -322,7 +322,7 @@ async function monitorResourceLimits() {
      LEFT JOIN application_resource_limits l ON l.application_id=a.id
      LEFT JOIN application_metrics m ON m.id=(
        SELECT latest.id FROM application_metrics latest
-       WHERE latest.application_id=a.id ORDER BY latest.recorded_at DESC LIMIT 1
+       WHERE latest.application_id=a.id ORDER BY latest.id DESC LIMIT 1
      )
      WHERE a.deleted_at IS NULL`,
   );

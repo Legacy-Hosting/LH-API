@@ -113,7 +113,7 @@ export async function getApplicationDetails(
        LEFT JOIN pm2_process_snapshots s ON s.id=(
          SELECT latest.id FROM pm2_process_snapshots latest
          WHERE latest.node_id=p.node_id AND latest.process_name=p.pm2_process_name
-         ORDER BY latest.recorded_at DESC LIMIT 1
+         ORDER BY latest.id DESC LIMIT 1
        )
        WHERE p.application_id=UUID_TO_BIN(?) ORDER BY p.start_order,p.created_at`,
       [applicationId],
