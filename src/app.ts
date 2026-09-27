@@ -21,12 +21,20 @@ import {
   type AuditEventReader,
   type HubAuditTokenVerifier,
 } from "./shared/modules/audit/audit.routes.js";
+import {
+  operationsRoutes,
+  type OperationsReader,
+} from "./shared/modules/operations/operations.routes.js";
 
 type BuildAppOptions = {
   auth?: AuthRouteOptions;
   audit?: {
     tokenVerifier?: HubAuditTokenVerifier;
     reader?: AuditEventReader;
+  };
+  operations?: {
+    tokenVerifier?: HubAuditTokenVerifier;
+    reader?: OperationsReader;
   };
 };
 
@@ -123,7 +131,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   app.get("/health", async () => ({
     status: "ok",
     database: await databaseStatus(),
-    version: "1.1.0",
+    version: "1.2.0",
   }));
   app.get("/api/v1", async () => ({
     name: "Legacy Hosting API",
@@ -138,6 +146,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(integrationRoutes, { prefix: "/api/v1/integrations" });
   await app.register(githubWebhookRoutes, { prefix: "/api/v1/integrations" });
   await app.register(auditRoutes, { prefix: "/api/v1/hub", ...options.audit });
+  await app.register(operationsRoutes, { prefix: "/api/v1/hub", ...options.operations });
   await app.register(billingProduct, { prefix: "/api/v1/billing" });
 
   return app;

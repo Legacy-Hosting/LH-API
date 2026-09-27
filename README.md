@@ -43,6 +43,8 @@ Panel logout revokes the local cookie and redirects the browser to SSO's discove
 
 `GET /api/v1/hub/audit-events` is the read-only staff audit feed used by LH-Hub. It accepts only a signed, short-lived SSO token for `HUB_SSO_AUDIENCE` and the Founder, Management, Administrator, or Support role. Results use stable cursor pagination, the global `(created_at,id)` index, and recursive redaction of secret-like metadata fields. The route does not accept Panel cookies or a shared static admin token.
 
+`GET /api/v1/hub/operations` provides Hub with a bounded operational summary: database connectivity, application and Agent state, 24-hour deployment totals, and at most twelve recent deployments. Founder, Management, Administrator, Developer, and Infrastructure roles may read it. The endpoint uses dedicated aggregate indexes, returns no repository URL, environment value, provider credential, log content, or customer token, and independently verifies the same short-lived `lh-hub` SSO token.
+
 The supported server baseline and PM2 deployment instructions are documented in `SERVER.md`.
 
 Tags named `v*` run verification and place the immutable archive in `LH-Releases/LH-API`. Its SHA-256 checksum is stored separately in `LH-Releases/LH-API/SHA256`.

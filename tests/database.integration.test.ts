@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import { after, test } from "node:test";
 import type { RowDataPacket } from "mysql2";
 import { closeDatabase, database } from "../src/core/database/mysql.js";
+import { readOperationsSummary } from "../src/shared/modules/operations/operations.service.js";
 
 after(async () => {
   await closeDatabase();
@@ -48,9 +49,25 @@ test(
        WHERE table_schema=DATABASE() AND index_name IN
        ('ix_pm2_snapshot_node_process_recorded',
         'ix_application_team_active_created',
-        'ix_application_metric_traffic')`,
+        'ix_application_metric_traffic',
+        'ix_deployment_created_status',
+        'ix_application_active_status',
+        'ix_node_status_heartbeat')`,
     );
-    assert.equal(indexes.length, 3);
+    assert.equal(indexes.length, 6);
+  },
+);
+
+test(
+  "Hub operations summary runs against an empty strict MySQL schema",
+  { skip: !process.env.DATABASE_URL },
+  async () => {
+    const summary = await readOperationsSummary();
+    assert.equal(summary.database.state, "connected");
+    assert.equal(summary.applications.total, 0);
+    assert.equal(summary.agents.total, 0);
+    assert.equal(summary.deployments.total, 0);
+    assert.equal(summary.deployments.successRate, null);
   },
 );
 
