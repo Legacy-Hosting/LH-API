@@ -2,6 +2,7 @@ import Fastify, { LogController } from "fastify";
 import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
+import formbody from "@fastify/formbody";
 import helmet from "@fastify/helmet";
 import rawBody from "fastify-raw-body";
 import rateLimit from "@fastify/rate-limit";
@@ -33,6 +34,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
 
   await app.register(helmet);
   await app.register(cookie);
+  await app.register(formbody);
   await app.register(rateLimit, {
     max: env.RATE_LIMIT_MAX,
     timeWindow: env.RATE_LIMIT_WINDOW_MS,
@@ -112,7 +114,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   app.get("/health", async () => ({
     status: "ok",
     database: await databaseStatus(),
-    version: "1.0.34",
+    version: "1.0.36",
   }));
   app.get("/api/v1", async () => ({
     name: "Legacy Hosting API",

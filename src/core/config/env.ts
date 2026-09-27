@@ -47,6 +47,7 @@ const schema = z
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   SSO_INTERNAL_URL: z.string().url().optional(),
   SSO_ISSUER: z.string().url().optional(),
+  SSO_JWKS_URL: z.string().url().optional(),
   SSO_IDENTITY_BRIDGE_TOKEN: z.string().min(32).optional(),
   SSO_CLIENT_ID: z.string().regex(/^[a-z0-9][a-z0-9_-]{2,63}$/).optional(),
   SSO_CLIENT_SECRET: z.string().min(32).optional(),
@@ -103,6 +104,7 @@ const schema = z
       for (const key of [
         "SSO_INTERNAL_URL",
         "SSO_ISSUER",
+        "SSO_JWKS_URL",
         "SSO_IDENTITY_BRIDGE_TOKEN",
         "SSO_CLIENT_ID",
         "SSO_CLIENT_SECRET",
@@ -120,6 +122,7 @@ const schema = z
       for (const key of [
         "SSO_INTERNAL_URL",
         "SSO_ISSUER",
+        "SSO_JWKS_URL",
         "SSO_REDIRECT_URI",
         "SSO_RESOURCE",
       ] as const) {
@@ -131,6 +134,17 @@ const schema = z
             message: `${key} must use HTTPS in production`,
           });
         }
+      }
+      if (
+        value.SSO_ISSUER &&
+        value.SSO_JWKS_URL &&
+        new URL(value.SSO_ISSUER).origin !== new URL(value.SSO_JWKS_URL).origin
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["SSO_JWKS_URL"],
+          message: "SSO_JWKS_URL must use the configured issuer origin",
+        });
       }
     }
     if (value.NODE_ENV === "production" && !value.CREDENTIAL_ENCRYPTION_KEY) {

@@ -275,3 +275,22 @@ export async function completeOidcLogin(
     returnUrl: new URL(loginRequest.returnPath, panelOrigin).toString(),
   };
 }
+
+export async function beginOidcLogout(options: OidcLoginOptions = {}) {
+  const issuer = requireConfiguration(options.issuer ?? env.SSO_ISSUER);
+  const clientId = requireConfiguration(env.SSO_CLIENT_ID);
+  const panelOrigin = options.panelOrigin ?? env.PANEL_ORIGIN;
+  try {
+    const logoutUrl = oidc.buildEndSessionUrl(await oidcConfiguration(), {
+      client_id: clientId,
+      post_logout_redirect_uri: new URL("/", panelOrigin).toString(),
+    });
+    if (logoutUrl.origin !== new URL(issuer).origin) {
+      throw new OidcLoginError("invalid_sso_logout_url", 503);
+    }
+    return logoutUrl.toString();
+  } catch (error) {
+    if (error instanceof OidcLoginError) throw error;
+    throw new OidcLoginError("sso_unavailable", 503, { cause: error });
+  }
+}

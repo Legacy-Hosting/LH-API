@@ -39,6 +39,8 @@ Configure `SSO_INTERNAL_URL` and `SSO_ISSUER` as `https://auth.legacyhosting.xyz
 
 The Panel OIDC client is implemented as a backend-for-frontend flow. `GET /api/v1/auth/oidc/start` creates a ten-minute, single-use state record with an encrypted PKCE verifier; the API callback validates state, nonce, PKCE, issuer, audience and the signed ID token before creating the existing HttpOnly Panel session. Configure the confidential `lh-panel` client through `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET`, `SSO_REDIRECT_URI`, and `SSO_RESOURCE`. OAuth tokens and the client secret are never exposed to Panel JavaScript.
 
+Panel logout revokes the local cookie and redirects the browser to SSO's discovered end-session endpoint. SSO also calls `/api/v1/auth/oidc/backchannel-logout` with a signed, short-lived logout token. API validates the ES256 signature through `SSO_JWKS_URL`, issuer, client audience, logout event, token age, subject, and one-time `jti` before revoking every active Panel session for that subject.
+
 The supported server baseline and PM2 deployment instructions are documented in `SERVER.md`.
 
 Tags named `v*` run verification and place the immutable archive in `LH-Releases/LH-API`. Its SHA-256 checksum is stored separately in `LH-Releases/LH-API/SHA256`.

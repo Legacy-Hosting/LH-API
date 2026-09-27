@@ -43,6 +43,7 @@ export async function enforceBrowserRequestSecurity(
   if (safeMethods.has(request.method)) return;
   if (
     request.url.startsWith("/api/v1/agent/") ||
+    request.url === "/api/v1/auth/oidc/backchannel-logout" ||
     request.url === "/api/v1/integrations/github/webhook"
   )
     return;

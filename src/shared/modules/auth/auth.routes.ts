@@ -26,10 +26,15 @@ import { createCsrfToken } from "../../security/csrf.js";
 import type { AuthenticatedRequest } from "./auth.types.js";
 import { createSsoLoginTicket, SsoBridgeError } from "./sso-bridge.service.js";
 import {
+  beginOidcLogout,
   beginOidcLogin,
   completeOidcLogin,
   OidcLoginError,
 } from "./oidc-login.service.js";
+import {
+  revokeOidcSessions,
+  type OidcLogoutTokenVerifier,
+} from "./oidc-logout.service.js";
 import { env } from "../../../core/config/env.js";
 
 const passkeyResponse = z.object({ id: z.string().min(1) }).passthrough();
@@ -61,11 +66,19 @@ const continueSsoBody = z.object({
 const oidcStartQuery = z.object({
   return_to: z.string().max(1_024).optional(),
 });
+const backchannelLogoutBody = z.object({
+  logout_token: z.string().min(100).max(16_384),
+});
 
 export type AuthRouteOptions = {
   oidcLogin?: {
     begin: typeof beginOidcLogin;
     complete: typeof completeOidcLogin;
+    logout?: typeof beginOidcLogout;
+    backchannel?: (
+      token: string,
+      verifier?: OidcLogoutTokenVerifier,
+    ) => ReturnType<typeof revokeOidcSessions>;
   };
 };
 
@@ -98,6 +111,8 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, opti
   const oidcLogin = options.oidcLogin ?? {
     begin: beginOidcLogin,
     complete: completeOidcLogin,
+    logout: beginOidcLogout,
+    backchannel: revokeOidcSessions,
   };
 
   app.get("/registration", async () => ({ data: await registrationStatus() }));
@@ -137,6 +152,26 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, opti
       const destination = new URL("/", env.PANEL_ORIGIN);
       destination.searchParams.set("auth", "sso_failed");
       return reply.header("Cache-Control", "no-store").redirect(destination.toString());
+    }
+  });
+
+  app.post("/oidc/backchannel-logout", {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute" } },
+  }, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const body = backchannelLogoutBody.safeParse(request.body);
+    if (!body.success || !oidcLogin.backchannel) {
+      return reply.status(400).send({ error: "invalid_logout_token" });
+    }
+    try {
+      await oidcLogin.backchannel(body.data.logout_token);
+      return reply.status(200).send();
+    } catch (error) {
+      request.log.warn(
+        { error: error instanceof Error ? error.message : "invalid_logout_token" },
+        "OIDC back-channel logout rejected",
+      );
+      return reply.status(400).send({ error: "invalid_logout_token" });
     }
   });
 
@@ -244,7 +279,18 @@ export const authRoutes: FastifyPluginAsync<AuthRouteOptions> = async (app, opti
 
   app.post("/logout", async (request, reply) => {
     await revokeSession(request, reply);
-    return reply.status(204).send();
+    let logoutUrl: string | null = null;
+    if (oidcLogin.logout) {
+      try {
+        logoutUrl = await oidcLogin.logout();
+      } catch (error) {
+        request.log.warn(
+          { error: error instanceof Error ? error.message : "sso_unavailable" },
+          "Local logout completed but SSO logout could not start",
+        );
+      }
+    }
+    return reply.header("Cache-Control", "no-store").send({ data: { logoutUrl } });
   });
 
   app.get(
