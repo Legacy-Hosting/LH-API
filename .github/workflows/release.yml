@@ -51,7 +51,8 @@ jobs:
         working-directory: service
         run: |
           pnpm install --frozen-lockfile
-          install -D -m 0755 tests/fixtures/install-node-agent.sh ../ops/scripts/install-node-agent.sh
+          bash -n ops/scripts/*.sh
+          shellcheck --severity=error ops/scripts/*.sh
           pnpm db:migrate
           pnpm test
           pnpm typecheck

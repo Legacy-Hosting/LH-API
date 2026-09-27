@@ -22,6 +22,7 @@ const schema = z
     .enum(["true", "false"])
     .default("true")
     .transform((value) => value === "true"),
+  AGENT_DISTRIBUTION_DIRECTORY: z.string().min(1).optional(),
   DATABASE_URL: z.string().min(1).optional(),
   DATABASE_SSL_CA: z.string().min(1).optional(),
   DATABASE_CONNECT_TIMEOUT_MS: z.coerce
@@ -102,6 +103,16 @@ const schema = z
         code: "custom",
         path: ["DATABASE_SSL_CA"],
         message: "DATABASE_SSL_CA is required in production",
+      });
+    }
+    if (
+      value.NODE_ENV === "production" &&
+      !value.AGENT_DISTRIBUTION_DIRECTORY
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["AGENT_DISTRIBUTION_DIRECTORY"],
+        message: "AGENT_DISTRIBUTION_DIRECTORY is required in production",
       });
     }
   });

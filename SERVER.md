@@ -18,7 +18,7 @@ pm2 startOrReload ecosystem.config.cjs --update-env
 pm2 save
 ```
 
-Tagged releases include the guarded scripts under `ops/scripts`. The production path is `/opt/legacy-hosting/releases/VERSION`, with atomic `current` and `previous` symlinks. `deploy-release.sh` verifies the SHA-256 archive, validates protected environment files, installs frozen production dependencies, creates an encrypted backup, applies forward-only migrations, switches the release, reloads PM2, and automatically restores the previous application symlink if local health verification fails.
+Tagged releases include the guarded scripts under `ops/scripts`. The production path is `/opt/legacy-hosting/api/releases/VERSION`, with `current` and `previous` release symlinks. `deploy-release.sh` verifies the SHA-256 archive, validates protected environment files, installs frozen production dependencies, creates an encrypted backup, applies forward-only migrations, switches the release, reloads PM2, and restores the previous application release if local health verification fails.
 
 Use the Nginx configurations under `ops/nginx`, then validate with `nginx -t`. The API configuration includes SSE buffering rules, proxy headers, HSTS, request-size limits, and an edge request limit. Set `TRUST_PROXY=true` only when the API is reachable exclusively through that trusted local proxy.
 
@@ -40,17 +40,6 @@ location ~ ^/api/v1/panel/applications/.*/commands/.*/events$ {
 ```
 
 Do not put database credentials or provider secrets in `ecosystem.config.cjs`. Keep production values in a protected environment file or secret manager and load them before `pm2 startOrReload`.
-
-## Panel deployment
-
-The panel is a static Vite build:
-
-```bash
-pnpm install --frozen-lockfile
-pnpm build
-```
-
-Serve `LH-Panel/dist` through Nginx or Caddy. The panel does not need its own PM2 process.
 
 ## Application detection defaults
 
@@ -129,4 +118,8 @@ certbot plugins | grep dns-cloudflare
 
 ## Backup and restore
 
-Install `age` and a MySQL 8 client, configure `/etc/legacy-hosting/backup.env` with mode `0600`, and enable the supplied `lh-backup.timer`. Backups are compressed, encrypted before they receive their final filename, checksummed, and retained locally for a bounded period. Follow the repository `BACKUP.md` for the disposable restore drill and DigitalOcean point-in-time recovery policy.
+Install the shared tooling from `LH-Ops`, configure `/etc/legacy-hosting/backups/api.env` with mode `0600`, and enable `lh-mysql-backup@api.timer`. Backups are compressed, encrypted before they receive their final filename, checksummed, and retained locally for a bounded period. Follow the root `BACKUP.md` runbook for disposable restore drills and DigitalOcean point-in-time recovery.
+
+## Agent distribution
+
+Set `AGENT_DISTRIBUTION_DIRECTORY=/var/lib/legacy-hosting/agent-distributions/current` in the protected API environment. Promote a verified LH-Agent archive with `LH-Ops/scripts/install-agent-distribution.sh` before the first API deployment. The public installer endpoints then serve only the active, checksummed distribution; they do not read files from another source checkout.

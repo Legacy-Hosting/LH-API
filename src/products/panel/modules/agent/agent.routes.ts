@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import type { FastifyPluginAsync, FastifyReply } from "fastify";
 import type { RowDataPacket } from "mysql2";
 import { z } from "zod";
+import { env } from "../../../../core/config/env.js";
 import { database } from "../../../../core/database/mysql.js";
 import { authenticateAgentRequest } from "./agent-auth.js";
 import {
@@ -80,17 +81,16 @@ export function databaseTimestamp(value: string | null) {
   return value ? new Date(value) : null;
 }
 
-const releaseRoot = resolve(process.cwd(), "..");
+const distributionDirectory = resolve(
+  process.cwd(),
+  env.AGENT_DISTRIBUTION_DIRECTORY ??
+    (env.NODE_ENV === "test" ? "tests/fixtures" : "agent-distribution"),
+);
 const installerFiles = {
-  script: resolve(releaseRoot, "ops", "scripts", "install-node-agent.sh"),
-  runtime: resolve(
-    releaseRoot,
-    "artifacts",
-    "lh-agent-runtime.tar.gz",
-  ),
+  script: resolve(distributionDirectory, "install-node-agent.sh"),
+  runtime: resolve(distributionDirectory, "lh-agent-runtime.tar.gz"),
   checksum: resolve(
-    releaseRoot,
-    "artifacts",
+    distributionDirectory,
     "lh-agent-runtime.tar.gz.sha256",
   ),
 };
