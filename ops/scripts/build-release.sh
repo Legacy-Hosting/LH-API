@@ -52,7 +52,7 @@ temporary_directory=$(mktemp -d)
 trap 'rm -rf -- "$temporary_directory"' EXIT
 release_root="$temporary_directory/lh-api-$version"
 mkdir -p "$release_root"
-cp -a "$repository_root"/{dist,database,package.json,pnpm-lock.yaml,pnpm-workspace.yaml,ecosystem.config.cjs,.env.example,README.md,SERVER.md} "$release_root/"
+cp -a "$repository_root"/{dist,database,public,package.json,pnpm-lock.yaml,pnpm-workspace.yaml,ecosystem.config.cjs,.env.example,README.md,SERVER.md} "$release_root/"
 cp -a "$repository_root/ops" "$release_root/"
 chmod 0755 "$release_root"/ops/scripts/*.sh
 

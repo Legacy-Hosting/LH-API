@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="Legacy Hosting API">
+  <defs>
+    <radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="translate(935 85) rotate(137) scale(720 650)" gradientUnits="userSpaceOnUse"><stop stop-color="#735cff" stop-opacity=".42"/><stop offset="1" stop-color="#0b0c10" stop-opacity="0"/></radialGradient>
+    <linearGradient id="brand" x1="95" y1="75" x2="245" y2="245" gradientUnits="userSpaceOnUse"><stop stop-color="#927dff"/><stop offset="1" stop-color="#6047ed"/></linearGradient>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse"><path d="M48 0H0V48" fill="none" stroke="#fff" stroke-opacity=".035"/></pattern>
+  </defs>
+  <rect width="1200" height="630" fill="#0b0c10"/><rect width="1200" height="630" fill="url(#grid)"/><rect width="1200" height="630" fill="url(#glow)"/>
+  <rect x="76" y="70" width="92" height="92" rx="25" fill="#7561ff"/><path d="M111 96v43h29" fill="none" stroke="#fff" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="190" y="112" fill="#f7f7fb" font-family="DM Sans,Segoe UI,Arial,sans-serif" font-size="29" font-weight="700">Legacy Hosting</text><text x="190" y="145" fill="#9b9daa" font-family="DM Sans,Segoe UI,Arial,sans-serif" font-size="17">Platform API</text>
+  <text x="76" y="330" fill="#a99cff" font-family="DM Sans,Segoe UI,Arial,sans-serif" font-size="18" font-weight="700" letter-spacing="3">PLATFORM SERVICES</text>
+  <text x="76" y="403" fill="#f7f7fb" font-family="DM Sans,Segoe UI,Arial,sans-serif" font-size="58" font-weight="750">Secure services. One API.</text>
+  <text x="76" y="457" fill="#a6a8b3" font-family="DM Sans,Segoe UI,Arial,sans-serif" font-size="23">Application infrastructure for the Legacy Hosting platform.</text>
+  <rect x="76" y="526" width="1048" height="1" fill="#fff" opacity=".1"/><circle cx="91" cy="568" r="6" fill="#42d58b"/><text x="109" y="575" fill="#c8cad2" font-family="DM Sans,Segoe UI,Arial,sans-serif" font-size="18">api.legacyhosting.xyz</text>
+</svg>

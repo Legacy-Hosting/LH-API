@@ -23,6 +23,19 @@ test("public API metadata and security headers are available", async () => {
   assert.equal(response.headers["x-content-type-options"], "nosniff");
 });
 
+test("root renders the branded API service page", async () => {
+  const response = await app.inject({ method: "GET", url: "/" });
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers["content-type"] ?? "", /text\/html/);
+  assert.match(response.body, /<title>API · Legacy Hosting<\/title>/);
+  assert.match(response.body, /https:\/\/api\.legacyhosting\.xyz\/social-card\.png/);
+  assert.doesNotMatch(response.body, /Route GET:\/ not found/);
+
+  const favicon = await app.inject({ method: "GET", url: "/favicon.svg" });
+  assert.equal(favicon.statusCode, 200);
+  assert.match(favicon.headers["content-type"] ?? "", /image\/svg\+xml/);
+});
+
 test("readiness returns 503 when the database dependency is unavailable", async () => {
   const degradedApp = await buildApp({
     health: { databaseStatus: async () => "unavailable" },
@@ -33,7 +46,7 @@ test("readiness returns 503 when the database dependency is unavailable", async 
     assert.deepEqual(response.json(), {
       status: "degraded",
       database: "unavailable",
-      version: "1.2.4",
+      version: "1.2.5",
     });
   } finally {
     await degradedApp.close();

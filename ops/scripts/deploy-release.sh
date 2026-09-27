@@ -36,7 +36,7 @@ install -d -m 0755 "$base/releases"
 staging=$(mktemp -d "$base/releases/.staging-${version}.XXXXXX")
 trap 'rm -rf -- "$staging"' EXIT
 tar -xzf "$archive" --no-same-owner --strip-components=1 -C "$staging"
-for path in package.json pnpm-lock.yaml ecosystem.config.cjs dist/server.js \
+for path in package.json pnpm-lock.yaml ecosystem.config.cjs dist/server.js public/favicon.svg \
   database/migrations ops/nginx/api.legacyhosting.xyz.conf \
   ops/scripts/validate-production-env.sh; do
   if [[ ! -e "$staging/$path" ]]; then

@@ -26,6 +26,8 @@ import {
   type OperationsReader,
 } from "./shared/modules/operations/operations.routes.js";
 import { API_VERSION } from "./version.js";
+import { publicAssets } from "./public-assets.js";
+import { renderServicePage, servicePageCss } from "./service-page.js";
 
 type BuildAppOptions = {
   health?: {
@@ -131,6 +133,34 @@ export async function buildApp(options: BuildAppOptions = {}) {
       requestId: request.id,
     });
   });
+
+  app.get("/", async (_request, reply) => reply
+    .header("Cache-Control", "public, max-age=300")
+    .type("text/html; charset=utf-8")
+    .send(renderServicePage()));
+  app.get("/assets/service.css", async (_request, reply) => reply
+    .header("Cache-Control", "public, max-age=300")
+    .type("text/css; charset=utf-8")
+    .send(servicePageCss));
+  for (const [path, contentType, body] of [
+    ["/favicon.svg", "image/svg+xml", publicAssets.favicon],
+    ["/favicon.ico", "image/x-icon", publicAssets.faviconIco],
+    ["/apple-touch-icon.png", "image/png", publicAssets.appleTouchIcon],
+    ["/favicon-192.png", "image/png", publicAssets.favicon192],
+    ["/favicon-512.png", "image/png", publicAssets.favicon512],
+    ["/fonts/fonts.css", "text/css; charset=utf-8", publicAssets.fontsCss],
+    ["/fonts/dm-sans-latin.woff2", "font/woff2", publicAssets.dmSans],
+    ["/fonts/space-grotesk-latin.woff2", "font/woff2", publicAssets.spaceGrotesk],
+    ["/social-card.png", "image/png", publicAssets.socialCard],
+    ["/social-card.svg", "image/svg+xml", publicAssets.socialCardSource],
+    ["/site.webmanifest", "application/manifest+json", publicAssets.manifest],
+    ["/robots.txt", "text/plain; charset=utf-8", publicAssets.robots],
+  ] as const) {
+    app.get(path, async (_request, reply) => reply
+      .header("Cache-Control", "public, max-age=86400")
+      .type(contentType)
+      .send(body));
+  }
 
   app.get("/health", async (_request, reply) => {
     const database = await (options.health?.databaseStatus ?? databaseStatus)();
