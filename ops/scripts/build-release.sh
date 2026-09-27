@@ -13,6 +13,15 @@ if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
 fi
 
 repository_root=$(cd "$(dirname "$0")/../.." && pwd)
+package_version=$(cd "$repository_root" && node -p "require('./package.json').version")
+if [[ $package_version != "$version" ]]; then
+  echo "Release version $version does not match package version $package_version" >&2
+  exit 1
+fi
+if [[ -n $(git -C "$repository_root" status --porcelain --untracked-files=normal) ]]; then
+  echo "Release builds require a clean Git worktree" >&2
+  exit 1
+fi
 releases_root=${2:-"$repository_root/../LH-Releases"}
 service_directory="$releases_root/LH-API"
 checksum_directory="$service_directory/SHA256"
