@@ -43,8 +43,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Check operations scripts
         run: |
-          bash -n ops/scripts/*.sh
-          shellcheck --severity=error ops/scripts/*.sh
+          bash -n ops/scripts/*.sh tests/release-rollback-integration.sh
+          shellcheck --severity=error ops/scripts/*.sh tests/release-rollback-integration.sh
+      - name: Exercise transactional release rollback
+        run: docker run --rm --read-only --tmpfs /opt:rw,exec,nosuid,nodev --tmpfs /var:rw,nosuid,nodev --tmpfs /tmp:rw,exec,nosuid,nodev --env LH_ROLLBACK_TEST_CONTAINER=1 --volume "$PWD:/repo:ro" --workdir /repo ubuntu:26.04 bash tests/release-rollback-integration.sh
       - run: pnpm db:migrate
       - run: pnpm test
       - run: pnpm typecheck && pnpm build

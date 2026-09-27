@@ -10,6 +10,11 @@ for process_name in lh-api lh-certificate-worker lh-monitoring-worker; do
   pm2 describe "$process_name" >/dev/null
 done
 current_release=$(readlink -f "$base/current")
+recorded_release=$(cat "$base/current-release")
+if [[ $recorded_release != "$(basename "$current_release")" ]]; then
+  echo "API current-release marker does not match the current symlink" >&2
+  exit 1
+fi
 CURRENT_RELEASE="$current_release" node <<'NODE'
 const { execFileSync } = require("node:child_process");
 const currentRelease = process.env.CURRENT_RELEASE;
