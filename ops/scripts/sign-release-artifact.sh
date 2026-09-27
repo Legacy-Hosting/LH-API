@@ -68,4 +68,3 @@ mv -f -- "$signature" "$signature_target"
 trap - EXIT
 rm -f -- "$public_key"
 echo "Signed $archive_name"
-
