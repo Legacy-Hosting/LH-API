@@ -31,7 +31,7 @@ export function renderServicePage() {
 </head>
 <body>
   <main class="service-card">
-    <div class="mark">L</div>
+    <img class="mark" src="/favicon-192.png" alt="Legacy Hosting logo">
     <p class="eyebrow">Legacy Hosting API</p>
     <h1>Platform services</h1>
     <p class="intro">Secure application programming interface for Legacy Hosting products and internal services.</p>
@@ -48,7 +48,7 @@ export const servicePageCss = `
 * { box-sizing: border-box; }
 body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at 50% 0%, #211d3b 0, #0b0c10 42%); }
 .service-card { width: min(430px, 100%); padding: 38px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: 0 30px 90px rgba(0,0,0,.36); }
-.mark { width: 44px; height: 44px; display: grid; place-items: center; border-radius: 12px; background: var(--purple); font-family: "Space Grotesk", sans-serif; font-weight: 700; font-size: 20px; }
+.mark { width: 44px; height: 44px; display: block; border-radius: 12px; object-fit: cover; }
 .eyebrow { margin: 24px 0 8px; color: #a99aff; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; }
 h1 { margin: 0; font-family: "Space Grotesk", sans-serif; font-size: 28px; letter-spacing: -.03em; }
 .intro { margin: 10px 0 27px; color: #999baa; line-height: 1.55; font-size: 14px; }

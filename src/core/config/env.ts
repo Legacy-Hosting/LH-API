@@ -50,6 +50,7 @@ const schema = z
   SSO_JWKS_URL: z.string().url().optional(),
   HUB_SSO_AUDIENCE: z.string().min(1).max(200).default("lh-hub"),
   HUB_INTERNAL_TOKEN: z.string().min(32).optional(),
+  HUB_INTERNAL_URL: z.string().url().default("https://hub.legacyhosting.xyz"),
   SSO_IDENTITY_BRIDGE_TOKEN: z.string().min(32).optional(),
   SSO_CLIENT_ID: z.string().regex(/^[a-z0-9][a-z0-9_-]{2,63}$/).optional(),
   SSO_CLIENT_SECRET: z.string().min(32).optional(),
@@ -85,6 +86,7 @@ const schema = z
   GITHUB_APP_PRIVATE_KEY_BASE64: z.string().min(1).optional(),
   GITHUB_WEBHOOK_SECRET: z.string().min(32).optional(),
   GITHUB_API_VERSION: z.string().default("2026-03-10"),
+  GITHUB_HUB_FORWARD_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(15_000).default(5_000),
   MONITORING_INTERVAL_MS: z.coerce
     .number()
     .int()
