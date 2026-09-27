@@ -41,6 +41,8 @@ The Panel OIDC client is implemented as a backend-for-frontend flow. `GET /api/v
 
 Panel logout revokes the local cookie and redirects the browser to SSO's discovered end-session endpoint. SSO also calls `/api/v1/auth/oidc/backchannel-logout` with a signed, short-lived logout token. API validates the ES256 signature through `SSO_JWKS_URL`, issuer, client audience, logout event, token age, subject, and one-time `jti` before revoking every active Panel session for that subject.
 
+`GET /api/v1/hub/audit-events` is the read-only staff audit feed used by LH-Hub. It accepts only a signed, short-lived SSO token for `HUB_SSO_AUDIENCE` and the Founder, Management, Administrator, or Support role. Results use stable cursor pagination, the global `(created_at,id)` index, and recursive redaction of secret-like metadata fields. The route does not accept Panel cookies or a shared static admin token.
+
 The supported server baseline and PM2 deployment instructions are documented in `SERVER.md`.
 
 Tags named `v*` run verification and place the immutable archive in `LH-Releases/LH-API`. Its SHA-256 checksum is stored separately in `LH-Releases/LH-API/SHA256`.

@@ -16,9 +16,18 @@ import { teamRoutes } from "./shared/modules/teams/team.routes.js";
 import { integrationRoutes } from "./shared/modules/integrations/integration.routes.js";
 import { githubWebhookRoutes } from "./shared/modules/integrations/github-webhook.routes.js";
 import { enforceBrowserRequestSecurity } from "./shared/security/csrf.js";
+import {
+  auditRoutes,
+  type AuditEventReader,
+  type HubAuditTokenVerifier,
+} from "./shared/modules/audit/audit.routes.js";
 
 type BuildAppOptions = {
   auth?: AuthRouteOptions;
+  audit?: {
+    tokenVerifier?: HubAuditTokenVerifier;
+    reader?: AuditEventReader;
+  };
 };
 
 export async function buildApp(options: BuildAppOptions = {}) {
@@ -114,7 +123,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   app.get("/health", async () => ({
     status: "ok",
     database: await databaseStatus(),
-    version: "1.0.36",
+    version: "1.1.0",
   }));
   app.get("/api/v1", async () => ({
     name: "Legacy Hosting API",
@@ -128,6 +137,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(teamRoutes, { prefix: "/api/v1/teams" });
   await app.register(integrationRoutes, { prefix: "/api/v1/integrations" });
   await app.register(githubWebhookRoutes, { prefix: "/api/v1/integrations" });
+  await app.register(auditRoutes, { prefix: "/api/v1/hub", ...options.audit });
   await app.register(billingProduct, { prefix: "/api/v1/billing" });
 
   return app;
