@@ -1,11 +1,11 @@
 {
   "name": "@legacyhosting/api",
-  "version": "1.0.31",
+  "version": "1.0.32",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.4.1",
   "engines": {
-    "node": ">=22.22.1 <23",
+    "node": ">=24.21.0 <25",
     "npm": ">=9.2.0",
     "pnpm": ">=12.4.1"
   },
@@ -33,7 +33,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@types/node": "22.20.4",
+    "@types/node": "24.19.0",
     "tsx": "4.23.15",
     "typescript": "7.0.2"
   }

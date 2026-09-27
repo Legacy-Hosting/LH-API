@@ -35,6 +35,8 @@ Browser mutations are protected by an exact Origin check plus a session-bound CS
 
 The supported server baseline and PM2 deployment instructions are documented in `SERVER.md`.
 
+Tags named `v*` run verification and place the immutable archive in `LH-Releases/LH-API`. Its SHA-256 checksum is stored separately in `LH-Releases/LH-API/SHA256`.
+
 `LH-Agent` posts signed heartbeats to `POST /api/v1/agent/heartbeat`. Each node has an independent credential; the API stores only its SHA-256-derived authentication key and validates request age plus an HMAC signature before accepting metrics.
 
 Node registration keeps public and private network identities separate. Each node has a public FQDN, optional private FQDN, dedicated IPv4 and IPv6 fields for both networks, and an independent application CNAME target. At least one public IP address is required.

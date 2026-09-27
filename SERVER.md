@@ -3,7 +3,7 @@
 The first supported production baseline is:
 
 - Ubuntu 26.04 LTS
-- Node.js 22.22.1
+- Node.js 24.21.0 LTS
 - npm 9.2.0
 - pnpm 12.4.1
 - PM2 7.0.4
@@ -54,7 +54,7 @@ Serve `LH-Panel/dist` through Nginx or Caddy. The panel does not need its own PM
 
 ## Application detection defaults
 
-When the panel detects a Node.js repository without an explicit version, use Node.js 22.22.1 as the initial suggestion. Repository files such as `.nvmrc`, `.node-version`, or `package.json#engines` take priority.
+When the panel detects a Node.js repository without an explicit version, use Node.js 24.21.0 as the initial suggestion. Repository files such as `.nvmrc`, `.node-version`, or `package.json#engines` take priority.
 
 ## Certbot and Cloudflare DNS
 

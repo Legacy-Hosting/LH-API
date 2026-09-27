@@ -10,6 +10,10 @@ import {
 } from "../../../../shared/modules/auth/auth.crypto.js";
 import type { SessionUser } from "../../../../shared/modules/auth/auth.types.js";
 import { teamFrom } from "../../../../shared/modules/teams/team.context.js";
+import {
+  nodeAgentModes,
+  type NodeAgentMode,
+} from "./node-modes.js";
 
 const hostname = z
   .string()
@@ -29,6 +33,7 @@ const ipv6Address = z
   .toLowerCase()
   .refine((value) => isIP(value) === 6, "Invalid IPv6 address");
 const nodeNetworkFields = z.object({
+  agentMode: z.enum(nodeAgentModes),
   publicFqdn: hostname,
   publicIpv4: ipv4Address.optional(),
   publicIpv6: ipv6Address.optional(),
@@ -40,6 +45,7 @@ const nodeNetworkFields = z.object({
 });
 export const createNodeBody = nodeNetworkFields
   .extend({
+    agentMode: z.enum(nodeAgentModes).default("hosting-node"),
     name: z
       .string()
       .trim()
@@ -56,7 +62,7 @@ export const createNodeBody = nodeNetworkFields
     path: ["publicIpv4"],
   });
 const nodeParams = z.object({ nodeId: z.string().uuid() });
-const updateNodeBody = nodeNetworkFields
+export const updateNodeBody = nodeNetworkFields
   .partial()
   .refine(
     (value) => Object.keys(value).length > 0,
@@ -71,7 +77,11 @@ export function canManageNodes(user: Pick<SessionUser, "isPlatformAdmin">) {
   return user.isPlatformAdmin;
 }
 
-export function nodeSetup(nodeId: string, token: string) {
+export function nodeSetup(
+  nodeId: string,
+  token: string,
+  agentMode: NodeAgentMode = "hosting-node",
+) {
   const apiUrl = "https://api.legacyhosting.xyz/api/v1";
   return {
     nodeId,
@@ -80,10 +90,11 @@ export function nodeSetup(nodeId: string, token: string) {
       LH_API_URL: apiUrl,
       LH_NODE_ID: nodeId,
       LH_AGENT_TOKEN: token,
+      LH_AGENT_MODE: agentMode,
       LH_HEARTBEAT_INTERVAL_MS: "30000",
       LH_COMMAND_POLL_INTERVAL_MS: "2000",
     },
-    installCommand: `curl -fsSL '${apiUrl}/agent/install.sh' | sudo bash -s -- --api-url '${apiUrl}' --node-id '${nodeId}' --token '${token}'`,
+    installCommand: `curl -fsSL '${apiUrl}/agent/install.sh' | sudo bash -s -- --api-url '${apiUrl}' --node-id '${nodeId}' --token '${token}' --mode '${agentMode}'`,
     warning:
       "The node token is shown once and cannot be recovered. Store it only in the agent environment file.",
   };
@@ -98,7 +109,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
       })[]
     >(
       `SELECT BIN_TO_UUID(id) AS id,region
-       FROM nodes WHERE status='online' ORDER BY region,name`,
+       FROM nodes WHERE status='online' AND agent_mode='hosting-node' ORDER BY region,name`,
     );
     return {
       data: nodes.map((node) => ({
@@ -126,6 +137,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
         privateIp: string | null;
         cnameTarget: string;
         region: string | null;
+        agentMode: NodeAgentMode;
         status: string;
         agentVersion: string | null;
         lastHeartbeatAt: Date | null;
@@ -138,7 +150,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
               n.public_ip AS publicIpv4,n.public_ipv6 AS publicIpv6,
               n.private_fqdn AS privateFqdn,n.private_ip AS privateIpv4,n.private_ipv6 AS privateIpv6,
               n.public_ip AS publicIp,n.private_ip AS privateIp,n.cname_target AS cnameTarget,
-              n.region,n.status,n.agent_version AS agentVersion,
+              n.region,n.agent_mode AS agentMode,n.status,n.agent_version AS agentVersion,
               n.last_heartbeat_at AS lastHeartbeatAt,m.load_1 AS load1,
               m.memory_used_percent AS memory,m.disk_used_percent AS disk
        FROM nodes n
@@ -165,8 +177,8 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
       await connection.beginTransaction();
       await connection.execute(
         `INSERT INTO nodes
-         (id,team_id,name,public_fqdn,public_ip,public_ipv6,private_fqdn,private_ip,private_ipv6,cname_target,region,status)
-         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,'pending')`,
+         (id,team_id,name,public_fqdn,public_ip,public_ipv6,private_fqdn,private_ip,private_ipv6,cname_target,region,agent_mode,status)
+         VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,?,?,?,?,?,?,?,?,'pending')`,
         [
           nodeId,
           team.id,
@@ -179,6 +191,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
           body.data.privateIpv6 ?? null,
           body.data.cnameTarget,
           body.data.region ?? null,
+          body.data.agentMode,
         ],
       );
       await connection.execute(
@@ -198,6 +211,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
             publicIpv4: body.data.publicIpv4,
             publicIpv6: body.data.publicIpv6,
             cnameTarget: body.data.cnameTarget,
+            agentMode: body.data.agentMode,
           }),
         ],
       );
@@ -223,7 +237,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
           id: nodeId,
           ...body.data,
           status: "pending",
-          agent: nodeSetup(nodeId, token),
+          agent: nodeSetup(nodeId, token, body.data.agentMode),
         },
       });
   });
@@ -237,6 +251,15 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
     if (!canManageNodes(user))
       return reply.status(403).send({ error: "platform_admin_required" });
 
+    if (body.data.agentMode === "monitor-only") {
+      const [applications] = await database().query<RowDataPacket[]>(
+        "SELECT 1 FROM applications WHERE node_id=UUID_TO_BIN(?) AND deleted_at IS NULL LIMIT 1",
+        [params.data.nodeId],
+      );
+      if (applications[0])
+        return reply.status(409).send({ error: "node_has_applications" });
+    }
+
     const fields: string[] = [];
     const values: (string | null)[] = [];
     const columns = {
@@ -248,6 +271,7 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
       privateIpv6: "private_ipv6",
       cnameTarget: "cname_target",
       region: "region",
+      agentMode: "agent_mode",
     } as const;
     for (const [key, column] of Object.entries(columns) as [
       keyof typeof columns,
@@ -283,7 +307,19 @@ export const nodeRoutes: FastifyPluginAsync = async (app) => {
     );
     if (!(result as ResultSetHeader).affectedRows)
       return reply.status(404).send({ error: "node_not_found" });
-    return { data: nodeSetup(params.data.nodeId, token) };
+    const [nodes] = await database().query<
+      (RowDataPacket & { agentMode: NodeAgentMode })[]
+    >(
+      "SELECT agent_mode AS agentMode FROM nodes WHERE id=UUID_TO_BIN(?) LIMIT 1",
+      [params.data.nodeId],
+    );
+    return {
+      data: nodeSetup(
+        params.data.nodeId,
+        token,
+        nodes[0]?.agentMode ?? "hosting-node",
+      ),
+    };
   });
 
   app.delete("/nodes/:nodeId", async (request, reply) => {

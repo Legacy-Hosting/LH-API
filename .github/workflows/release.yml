@@ -1,0 +1,76 @@
+name: API Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: legacyhosting
+          MYSQL_ROOT_PASSWORD: test-password
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping --host=127.0.0.1 --user=root --password=test-password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    env:
+      NODE_ENV: test
+      DATABASE_URL: mysql://root:test-password@127.0.0.1:3306/legacyhosting
+      CREDENTIAL_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      CSRF_SECRET: ci-only-csrf-secret-with-32-characters
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: service
+      - uses: actions/checkout@v7
+        with:
+          repository: Legacy-Hosting/LH-Releases
+          token: ${{ secrets.RELEASES_TOKEN }}
+          path: releases
+          lfs: true
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.4.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24.21.0
+          cache: pnpm
+          cache-dependency-path: service/pnpm-lock.yaml
+      - name: Verify and build
+        working-directory: service
+        run: |
+          pnpm install --frozen-lockfile
+          install -D -m 0755 tests/fixtures/install-node-agent.sh ../ops/scripts/install-node-agent.sh
+          pnpm db:migrate
+          pnpm test
+          pnpm typecheck
+          pnpm build
+          pnpm audit --prod --audit-level high
+      - name: Build immutable release
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          service/ops/scripts/build-release.sh "$VERSION" "$GITHUB_WORKSPACE/releases"
+      - name: Publish to LH-Releases
+        working-directory: releases
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          git lfs install --local
+          git config user.name "Legacy Hosting Releases"
+          git config user.email "releases@legacyhosting.xyz"
+          git add LH-API
+          git commit -m "release: LH-API ${RELEASE_VERSION#v}"
+          git pull --rebase origin main
+          git push origin HEAD:main

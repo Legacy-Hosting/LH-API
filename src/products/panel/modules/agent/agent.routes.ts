@@ -11,6 +11,10 @@ import {
   claimAgentCommand,
   completeAgentCommand,
 } from "./agent-command.service.js";
+import {
+  nodeAgentModes,
+  type NodeAgentMode,
+} from "../nodes/node-modes.js";
 
 const processSchema = z.object({
   pm2Id: z.number().int().nullable(),
@@ -25,8 +29,9 @@ const processSchema = z.object({
   revision: z.string().max(64).nullable(),
 });
 
-const heartbeatSchema = z.object({
+export const heartbeatSchema = z.object({
   agentVersion: z.string().min(1).max(30),
+  mode: z.enum(nodeAgentModes).default("hosting-node"),
   sentAt: z.string().datetime(),
   system: z.object({
     hostname: z.string().min(1).max(253),
@@ -146,6 +151,15 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
       return reply
         .status(400)
         .send({ error: "validation_error", details: payload.error.flatten() });
+
+    const [registeredNodes] = await database().query<
+      (RowDataPacket & { agentMode: NodeAgentMode })[]
+    >(
+      "SELECT agent_mode AS agentMode FROM nodes WHERE id=UUID_TO_BIN(?) LIMIT 1",
+      [nodeId],
+    );
+    if (registeredNodes[0]?.agentMode !== payload.data.mode)
+      return reply.status(409).send({ error: "agent_mode_mismatch" });
 
     const pool = database();
     const connection = await pool.getConnection();

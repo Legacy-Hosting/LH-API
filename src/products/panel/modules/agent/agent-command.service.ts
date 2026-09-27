@@ -110,6 +110,14 @@ export async function appendAgentCommandOutput(
 }
 
 export async function claimAgentCommand(nodeId: string) {
+  const [nodes] = await database().query<
+    (RowDataPacket & { agentMode: string })[]
+  >(
+    "SELECT agent_mode AS agentMode FROM nodes WHERE id=UUID_TO_BIN(?) LIMIT 1",
+    [nodeId],
+  );
+  if (nodes[0]?.agentMode !== "hosting-node") return null;
+
   const connection = await database().getConnection();
   let command: CommandRow | undefined;
   let leaseToken = "";
