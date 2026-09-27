@@ -25,8 +25,12 @@ import {
   operationsRoutes,
   type OperationsReader,
 } from "./shared/modules/operations/operations.routes.js";
+import { API_VERSION } from "./version.js";
 
 type BuildAppOptions = {
+  health?: {
+    databaseStatus?: typeof databaseStatus;
+  };
   auth?: AuthRouteOptions;
   audit?: {
     tokenVerifier?: HubAuditTokenVerifier;
@@ -128,11 +132,15 @@ export async function buildApp(options: BuildAppOptions = {}) {
     });
   });
 
-  app.get("/health", async () => ({
-    status: "ok",
-    database: await databaseStatus(),
-    version: "1.2.0",
-  }));
+  app.get("/health", async (_request, reply) => {
+    const database = await (options.health?.databaseStatus ?? databaseStatus)();
+    const healthy = database === "connected";
+    return reply.status(healthy ? 200 : 503).send({
+      status: healthy ? "ok" : "degraded",
+      database,
+      version: API_VERSION,
+    });
+  });
   app.get("/api/v1", async () => ({
     name: "Legacy Hosting API",
     version: "v1",

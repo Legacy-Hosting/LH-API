@@ -23,6 +23,23 @@ test("public API metadata and security headers are available", async () => {
   assert.equal(response.headers["x-content-type-options"], "nosniff");
 });
 
+test("readiness returns 503 when the database dependency is unavailable", async () => {
+  const degradedApp = await buildApp({
+    health: { databaseStatus: async () => "unavailable" },
+  });
+  try {
+    const response = await degradedApp.inject({ method: "GET", url: "/health" });
+    assert.equal(response.statusCode, 503);
+    assert.deepEqual(response.json(), {
+      status: "degraded",
+      database: "unavailable",
+      version: "1.2.1",
+    });
+  } finally {
+    await degradedApp.close();
+  }
+});
+
 test("the Ubuntu node installer is publicly downloadable", async () => {
   const response = await app.inject({
     method: "GET",
