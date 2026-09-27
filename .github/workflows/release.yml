@@ -25,8 +25,6 @@ jobs:
           --health-timeout=5s
           --health-retries=10
     env:
-      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
-      RELEASE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY_B64 }}
       NODE_ENV: test
       DATABASE_URL: mysql://root:test-password@127.0.0.1:3306/legacyhosting
       CREDENTIAL_ENCRYPTION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
@@ -50,16 +48,7 @@ jobs:
           git merge-base --is-ancestor "$tag_commit" FETCH_HEAD
           version="${GITHUB_REF_NAME#v}"
           test "$version" = "$(node -p "require('./package.json').version")"
-      - name: Check out LH-Releases
-        if: env.RELEASES_TOKEN != ''
-        uses: actions/checkout@v7
-        with:
-          repository: Legacy-Hosting/LH-Releases
-          token: ${{ env.RELEASES_TOKEN }}
-          path: releases
-          lfs: true
       - name: Prepare local release artifact
-        if: env.RELEASES_TOKEN == ''
         run: mkdir releases && git -C releases init
       - uses: pnpm/action-setup@v6
         with:
@@ -82,6 +71,8 @@ jobs:
           pnpm audit --prod --audit-level high
       - name: Build immutable release
         shell: bash
+        env:
+          RELEASE_SIGNING_PRIVATE_KEY_B64: ${{ secrets.RELEASE_SIGNING_PRIVATE_KEY_B64 }}
         run: |
           test -n "$RELEASE_SIGNING_PRIVATE_KEY_B64"
           SIGNING_KEY=$(mktemp)
@@ -91,9 +82,58 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           RELEASE_SIGNING_PRIVATE_KEY_FILE="$SIGNING_KEY" \
             service/ops/scripts/build-release.sh "$VERSION" "$GITHUB_WORKSPACE/releases"
+      - name: Retain release for manual publication
+        uses: actions/upload-artifact@v6
+        with:
+          name: LH-API-${{ github.ref_name }}
+          path: releases/LH-API
+          if-no-files-found: error
+          retention-days: 7
+      - name: Detect publication credential
+        id: release_credentials
+        shell: bash
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          if [[ -n "$RELEASES_TOKEN" ]]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Check out LH-Releases for publication
+        if: steps.release_credentials.outputs.available == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: Legacy-Hosting/LH-Releases
+          token: ${{ secrets.RELEASES_TOKEN }}
+          path: publication
+          lfs: true
+      - name: Stage append-only publication
+        if: steps.release_credentials.outputs.available == 'true'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="lh-api-$version.tar.gz"
+          sources=(
+            "releases/LH-API/$archive"
+            "releases/LH-API/SHA256/$archive.sha256"
+            "releases/LH-API/SIGNATURES/$archive.sig"
+          )
+          test "$(find releases/LH-API -type f | wc -l)" -eq 3
+          test "$(find releases/LH-API -type l | wc -l)" -eq 0
+          for source in "${sources[@]}"; do
+            test -f "$source"
+            relative=${source#releases/}
+            if [[ -e "publication/$relative" || -L "publication/$relative" ]]; then
+              echo "Release artifact already exists: $relative" >&2
+              exit 1
+            fi
+          done
+          mkdir -p publication/LH-API
+          cp -a releases/LH-API/. publication/LH-API/
       - name: Publish to LH-Releases
-        if: env.RELEASES_TOKEN != ''
-        working-directory: releases
+        if: steps.release_credentials.outputs.available == 'true'
+        working-directory: publication
         env:
           RELEASE_VERSION: ${{ github.ref_name }}
         run: |
@@ -104,11 +144,3 @@ jobs:
           git commit -m "release: LH-API ${RELEASE_VERSION#v}"
           git pull --rebase origin main
           git push origin HEAD:main
-      - name: Retain release for manual publication
-        if: env.RELEASES_TOKEN == ''
-        uses: actions/upload-artifact@v6
-        with:
-          name: LH-API-${{ github.ref_name }}
-          path: releases/LH-API
-          if-no-files-found: error
-          retention-days: 7
