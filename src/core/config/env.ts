@@ -45,6 +45,10 @@ const schema = z
     .default(5_000),
   SESSION_COOKIE_DOMAIN: z.string().optional(),
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
+  SSO_INTERNAL_URL: z.string().url().optional(),
+  SSO_ISSUER: z.string().url().optional(),
+  SSO_IDENTITY_BRIDGE_TOKEN: z.string().min(32).optional(),
+  SSO_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1_000).max(15_000).default(5_000),
   WEBAUTHN_RP_NAME: z.string().default("Legacy Hosting"),
   WEBAUTHN_RP_ID: z.string().default("localhost"),
   WEBAUTHN_ORIGIN: z.string().url().default("http://localhost:5173"),
@@ -90,6 +94,27 @@ const schema = z
         path: ["CSRF_SECRET"],
         message: "CSRF_SECRET is required in production",
       });
+    }
+    if (value.NODE_ENV === "production") {
+      for (const key of ["SSO_INTERNAL_URL", "SSO_ISSUER", "SSO_IDENTITY_BRIDGE_TOKEN"] as const) {
+        if (!value[key]) {
+          context.addIssue({
+            code: "custom",
+            path: [key],
+            message: `${key} is required in production`,
+          });
+        }
+      }
+      for (const key of ["SSO_INTERNAL_URL", "SSO_ISSUER"] as const) {
+        const configured = value[key];
+        if (configured && new URL(configured).protocol !== "https:") {
+          context.addIssue({
+            code: "custom",
+            path: [key],
+            message: `${key} must use HTTPS in production`,
+          });
+        }
+      }
     }
     if (value.NODE_ENV === "production" && !value.CREDENTIAL_ENCRYPTION_KEY) {
       context.addIssue({

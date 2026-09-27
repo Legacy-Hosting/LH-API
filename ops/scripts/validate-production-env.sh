@@ -7,7 +7,7 @@ if [[ ! -f $environment_file ]]; then
   exit 1
 fi
 permissions=$(stat -c '%a' "$environment_file")
-if (( 10#$permissions > 600 )); then
+if (( (8#$permissions & 077) != 0 )); then
   echo "$environment_file must have mode 0600 or stricter" >&2
   exit 1
 fi
@@ -19,6 +19,7 @@ required=(
   NODE_ENV PANEL_ORIGIN AGENT_DISTRIBUTION_DIRECTORY DATABASE_URL
   DATABASE_SSL_CA WEBAUTHN_RP_ID
   WEBAUTHN_ORIGIN CREDENTIAL_ENCRYPTION_KEY CSRF_SECRET
+  SSO_INTERNAL_URL SSO_ISSUER SSO_IDENTITY_BRIDGE_TOKEN
   CLOUDFLARE_OAUTH_CLIENT_ID CLOUDFLARE_OAUTH_CLIENT_SECRET
   CLOUDFLARE_OAUTH_REDIRECT_URI CLOUDFLARE_OAUTH_API_ORIGIN
   CLOUDFLARE_OAUTH_TOKEN_AUTH_METHOD GITHUB_APP_ID GITHUB_APP_SLUG
@@ -36,7 +37,8 @@ if [[ $NODE_ENV != production ]]; then
   exit 1
 fi
 for url in "$PANEL_ORIGIN" "$WEBAUTHN_ORIGIN" "$CLOUDFLARE_OAUTH_REDIRECT_URI" \
-  "$CLOUDFLARE_OAUTH_API_ORIGIN" "$GITHUB_OAUTH_REDIRECT_URI"; do
+  "$CLOUDFLARE_OAUTH_API_ORIGIN" "$GITHUB_OAUTH_REDIRECT_URI" \
+  "$SSO_INTERNAL_URL" "$SSO_ISSUER"; do
   if [[ $url != https://* ]]; then
     echo "Production origins and OAuth URLs must use HTTPS" >&2
     exit 1
@@ -58,8 +60,9 @@ if [[ $CLOUDFLARE_OAUTH_TOKEN_AUTH_METHOD != client_secret_basic && \
   echo "Invalid Cloudflare OAuth token authentication method" >&2
   exit 1
 fi
-if [[ ${#CSRF_SECRET} -lt 32 || ${#GITHUB_WEBHOOK_SECRET} -lt 32 ]]; then
-  echo "CSRF_SECRET and GITHUB_WEBHOOK_SECRET must contain at least 32 characters" >&2
+if [[ ${#CSRF_SECRET} -lt 32 || ${#GITHUB_WEBHOOK_SECRET} -lt 32 || \
+      ${#SSO_IDENTITY_BRIDGE_TOKEN} -lt 32 ]]; then
+  echo "CSRF_SECRET, GITHUB_WEBHOOK_SECRET, and SSO_IDENTITY_BRIDGE_TOKEN must contain at least 32 characters" >&2
   exit 1
 fi
 decoded_key_bytes=$(printf '%s' "$CREDENTIAL_ENCRYPTION_KEY" | base64 -d 2>/dev/null | wc -c)

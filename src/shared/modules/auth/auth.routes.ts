@@ -23,6 +23,8 @@ import {
   SESSION_COOKIE_NAME,
 } from "./session.service.js";
 import { createCsrfToken } from "../../security/csrf.js";
+import type { AuthenticatedRequest } from "./auth.types.js";
+import { createSsoLoginTicket, SsoBridgeError } from "./sso-bridge.service.js";
 
 const passkeyResponse = z.object({ id: z.string().min(1) }).passthrough();
 const registerOptionsBody = z.object({
@@ -46,6 +48,9 @@ const verifyAuthenticationBody = z.object({
 const registrationSettingBody = z.object({
   mode: z.enum(["open", "invite_only", "closed"]),
   emailVerificationRequired: z.boolean().default(false),
+});
+const continueSsoBody = z.object({
+  interactionUid: z.string().regex(/^[A-Za-z0-9_-]{16,255}$/),
 });
 
 function errorStatus(message: string) {
@@ -156,6 +161,26 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
     return {
       data: { token: createCsrfToken(sessionToken) },
     };
+  });
+
+  app.post("/sso/continue", { preHandler: requireSession }, async (request, reply) => {
+    const body = continueSsoBody.safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: "validation_error" });
+    const user = (request as AuthenticatedRequest).sessionUser;
+    try {
+      const ticket = await createSsoLoginTicket({
+        interactionUid: body.data.interactionUid,
+        subject: user.id,
+        email: user.email,
+        displayName: user.displayName,
+      });
+      return reply.header("Cache-Control", "no-store").send({ data: ticket });
+    } catch (error) {
+      if (error instanceof SsoBridgeError) {
+        return reply.status(error.statusCode).send({ error: error.message });
+      }
+      throw error;
+    }
   });
 
   app.post("/logout", async (request, reply) => {

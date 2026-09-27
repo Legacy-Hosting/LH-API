@@ -33,6 +33,10 @@ Panel routes require an authenticated database session. The first account is cre
 
 Browser mutations are protected by an exact Origin check plus a session-bound CSRF token. The panel obtains the token from `GET /api/v1/auth/csrf` and sends it through `X-CSRF-Token`. Authentication endpoints have tighter per-IP limits than the general API. Production startup requires separate `CSRF_SECRET` and `CREDENTIAL_ENCRYPTION_KEY` values.
 
+During the SSO migration, `POST /api/v1/auth/sso/continue` converts an authenticated legacy Panel session into a short-lived SSO login ticket. The API sends the current immutable user UUID, email, and display name directly to SSO using `SSO_IDENTITY_BRIDGE_TOKEN`; that secret is never returned to the browser. The browser receives only the one-time ticket and its strictly validated completion URI.
+
+Configure `SSO_INTERNAL_URL` and `SSO_ISSUER` as `https://auth.legacyhosting.xyz`. On `ams3-api-01`, resolve that hostname to the SSO Droplet's private VPC address through `/etc/hosts` or internal DNS so the request reaches the Nginx route restricted to `10.110.0.0/20`, rather than Cloudflare. Use the same bridge token in API and SSO, but do not reuse the Discord internal token.
+
 The supported server baseline and PM2 deployment instructions are documented in `SERVER.md`.
 
 Tags named `v*` run verification and place the immutable archive in `LH-Releases/LH-API`. Its SHA-256 checksum is stored separately in `LH-Releases/LH-API/SHA256`.
