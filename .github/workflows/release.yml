@@ -83,7 +83,7 @@ jobs:
           RELEASE_SIGNING_PRIVATE_KEY_FILE="$SIGNING_KEY" \
             service/ops/scripts/build-release.sh "$VERSION" "$GITHUB_WORKSPACE/releases"
       - name: Retain release for manual publication
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: LH-API-${{ github.ref_name }}
           path: releases/LH-API
