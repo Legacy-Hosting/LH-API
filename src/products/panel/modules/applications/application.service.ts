@@ -194,8 +194,17 @@ export async function updateApplication(
   teamId: string,
   user: SessionUser,
   input: UpdateApplication,
+  dependencies = { database, provisionCloudflareCname },
 ) {
-  const connection = await database().getConnection();
+  const pool = dependencies.database();
+  const connection = await pool.getConnection();
+  const domainConfigurations: Array<{
+    id: string;
+    hostname: string;
+    rootDomain: string;
+    routes: Array<{ prefix: string; port: number; processName: string }>;
+  }> = [];
+  let cnameTarget = "";
   try {
     await connection.beginTransaction();
     const [applications] = await connection.query<
@@ -206,18 +215,20 @@ export async function updateApplication(
         domainId: string | null;
         status: string;
         teamSlug: string;
+        cnameTarget: string;
       })[]
     >(
       `SELECT a.detected_runtime AS runtime,a.repository_full_name AS repository,
               BIN_TO_UUID(a.node_id) AS nodeId,BIN_TO_UUID(a.domain_id) AS domainId,
-              a.status,t.slug AS teamSlug
-       FROM applications a JOIN teams t ON t.id=a.team_id
+              a.status,t.slug AS teamSlug,n.cname_target AS cnameTarget
+       FROM applications a JOIN teams t ON t.id=a.team_id JOIN nodes n ON n.id=a.node_id
        WHERE a.id=UUID_TO_BIN(?) AND a.team_id=UUID_TO_BIN(?) AND a.deleted_at IS NULL
        FOR UPDATE`,
       [applicationId, teamId],
     );
     const application = applications[0];
     if (!application) throw new Error("application_not_found");
+    cnameTarget = application.cnameTarget;
     if (application.status === "deleting")
       throw new Error("application_deletion_in_progress");
     if (!application.domainId && input.processes.some((process) => process.public))
@@ -255,9 +266,16 @@ export async function updateApplication(
     });
 
     const [domainRows] = await connection.query<
-      (RowDataPacket & { id: string; hostname: string })[]
+      (RowDataPacket & {
+        id: string;
+        hostname: string;
+        rootDomain: string;
+        routingMode: "shared" | "dedicated";
+        status: string;
+      })[]
     >(
-      `SELECT BIN_TO_UUID(d.id) AS id,d.hostname
+      `SELECT BIN_TO_UUID(d.id) AS id,d.hostname,d.root_domain AS rootDomain,
+              ad.routing_mode AS routingMode,d.status
        FROM application_domains ad JOIN domains d ON d.id=ad.domain_id
        WHERE ad.application_id=UUID_TO_BIN(?)`,
       [applicationId],
@@ -266,6 +284,57 @@ export async function updateApplication(
     const primaryHostname = domainRows.find(
       (domain) => domain.id === application.domainId,
     )?.hostname;
+
+    const requestedHostnames = [...new Set(input.processes.flatMap((process) =>
+      process.public && process.hostname && process.hostname !== primaryHostname
+        ? [process.hostname]
+        : [],
+    ))];
+    const missingHostnames = requestedHostnames.filter((hostname) => !domains.has(hostname));
+    if (missingHostnames.length) {
+      const [connectedZones] = await connection.query<ZoneRow[]>(
+        `SELECT r.display_name AS name
+         FROM integration_resources r JOIN integrations i ON i.id=r.integration_id
+         WHERE i.team_id=UUID_TO_BIN(?) AND i.provider='cloudflare' AND i.disconnected_at IS NULL
+           AND r.resource_type='zone' AND r.enabled=TRUE
+         ORDER BY CHAR_LENGTH(r.display_name) DESC`,
+        [teamId],
+      );
+      const zoneNames = connectedZones.map((zone) => zone.name.toLowerCase());
+      for (const hostname of missingHostnames) {
+        const rootDomain = zoneForHostname(hostname, zoneNames);
+        if (!rootDomain) throw new Error("cloudflare_zone_not_connected");
+        const [claimedDomains] = await connection.query<RowDataPacket[]>(
+          "SELECT id FROM domains WHERE hostname=? LIMIT 1",
+          [hostname],
+        );
+        if (claimedDomains.length) throw new Error("application_or_domain_exists");
+        const id = randomUUID();
+        await connection.execute(
+          `INSERT INTO domains (id,team_id,hostname,root_domain,record_type,dns_target,proxied,status)
+           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),?,?,'CNAME',?,TRUE,'pending')`,
+          [id, teamId, hostname, rootDomain, cnameTarget],
+        );
+        await connection.execute(
+          `INSERT INTO application_domains (application_id,domain_id,is_primary,routing_mode)
+           VALUES (UUID_TO_BIN(?),UUID_TO_BIN(?),FALSE,'dedicated')`,
+          [applicationId, id],
+        );
+        domains.set(hostname, id);
+        domainConfigurations.push({ id, hostname, rootDomain, routes: [] });
+      }
+    }
+    for (const hostname of requestedHostnames) {
+      const existing = domainRows.find((domain) => domain.hostname === hostname);
+      // A shared alias mirrors the primary hostname; it cannot simultaneously
+      // host an independent process without breaking the existing alias routes.
+      if (existing?.routingMode === "shared")
+        throw new Error("process_hostname_is_shared_alias");
+      // A failed DNS attempt leaves the saved domain intact. Saving again retries
+      // provisioning rather than allocating another domain/port or losing secrets.
+      if (existing && existing.status !== "active")
+        domainConfigurations.push({ ...existing, routes: [] });
+    }
 
     const [usedPortRows] = await connection.query<
       (RowDataPacket & { internalPort: number })[]
@@ -327,6 +396,13 @@ export async function updateApplication(
       };
     });
     const primaryProcess = processes.find((process) => process.primary);
+    for (const domain of domainConfigurations) {
+      domain.routes = processes
+        .filter((process) => process.public && process.enabled && process.internalPort && process.domainId === domain.id)
+        .flatMap((process) => process.routes.map((prefix) => ({
+          prefix, port: process.internalPort!, processName: process.name,
+        })));
+    }
     const managedProcess = primaryProcess ?? processes.find((process) => process.enabled) ?? processes[0];
     if (!managedProcess) throw new Error("application_process_required");
     if (primaryProcess && !primaryProcess.internalPort)
@@ -522,17 +598,78 @@ export async function updateApplication(
           autoDeploy: input.autoDeploy,
           processes: input.processes.map((process) => process.name),
           persistentPaths: input.persistentPaths.length,
+          addedHostnames: missingHostnames,
         }),
       ],
     );
     await connection.commit();
-    return { updated: true };
   } catch (error) {
     await connection.rollback();
     throw error;
   } finally {
     connection.release();
   }
+
+  const domainResults: Array<{
+    hostname: string;
+    status: "pending" | "configuring" | "error";
+  }> = [];
+  // External DNS is only touched after the complete settings transaction commits.
+  // Never return a failed save for settings which have already been persisted.
+  for (const domain of domainConfigurations) {
+    if (!domain.routes.length) {
+      // Disabled public processes may reserve a hostname, but cannot produce a
+      // valid Nginx configuration yet. Provision when an enabled route is saved.
+      domainResults.push({ hostname: domain.hostname, status: "pending" });
+      continue;
+    }
+    try {
+      const dns = await dependencies.provisionCloudflareCname({
+        teamId, rootDomain: domain.rootDomain, hostname: domain.hostname,
+        target: cnameTarget, proxied: true,
+      });
+      const provisioning = await pool.getConnection();
+      try {
+        await provisioning.beginTransaction();
+        await provisioning.execute(
+          `UPDATE domains SET integration_id=UUID_TO_BIN(?),provider_record_id=?,status='active',
+             proxy_status='configuring',last_error=NULL WHERE id=UUID_TO_BIN(?)`,
+          [dns.integrationId, dns.recordId, domain.id],
+        );
+        const [queued] = await provisioning.execute<ResultSetHeader>(
+          `INSERT INTO node_commands (id,node_id,application_id,command_type,payload)
+           SELECT UUID_TO_BIN(?),node_id,id,'configure_proxy',? FROM applications
+           WHERE id=UUID_TO_BIN(?) AND team_id=UUID_TO_BIN(?) AND deleted_at IS NULL AND status<>'deleting'`,
+          [randomUUID(), JSON.stringify({
+            domainId: domain.id, hostname: domain.hostname,
+            rootDomain: domain.rootDomain, routes: domain.routes,
+          }), applicationId, teamId],
+        );
+        if (queued.affectedRows !== 1) throw new Error("application_not_found");
+        await provisioning.commit();
+      } catch (error) {
+        await provisioning.rollback();
+        throw error;
+      } finally {
+        provisioning.release();
+      }
+      domainResults.push({ hostname: domain.hostname, status: "configuring" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "cloudflare_dns_failed";
+      try {
+        await pool.execute(
+          "UPDATE domains SET status='error',proxy_status='error',last_error=? WHERE id=UUID_TO_BIN(?)",
+          [message.slice(0, 4000), domain.id],
+        );
+      } catch {
+        // The database may have become unavailable after settings committed.
+        // Preserve the partial-failure response; the pending domain can be
+        // retried by saving again once the dependency is healthy.
+      }
+      domainResults.push({ hostname: domain.hostname, status: "error" });
+    }
+  }
+  return { updated: true, domains: domainResults };
 }
 
 export async function queueApplicationCommand(

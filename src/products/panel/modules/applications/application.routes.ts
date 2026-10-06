@@ -158,19 +158,25 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
     const user = (request as FastifyRequest & { sessionUser: SessionUser })
       .sessionUser;
     try {
-      return {
-        data: await updateApplication(
-          params.data.applicationId,
-          team.id,
-          user,
-          body.data,
-        ),
-      };
+      const data = await updateApplication(
+        params.data.applicationId,
+        team.id,
+        user,
+        body.data,
+      );
+      const failedDomainCount = data.domains.filter((domain) => domain.status === "error").length;
+      if (failedDomainCount) request.log.warn(
+        { applicationId: params.data.applicationId, failedDomainCount },
+        "Application settings saved with incomplete hostname provisioning",
+      );
+      return { data };
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "application_update_failed";
       if (message === "application_not_found")
         return reply.status(404).send({ error: message });
+      if (message === "application_or_domain_exists")
+        return reply.status(409).send({ error: message });
       const conflict =
         typeof error === "object" &&
         error !== null &&
@@ -178,7 +184,7 @@ export const applicationRoutes: FastifyPluginAsync = async (app) => {
         error.code === "ER_DUP_ENTRY";
       return reply
         .status(conflict ? 409 : 400)
-        .send({ error: conflict ? "application_name_exists" : message });
+        .send({ error: conflict ? "application_or_domain_exists" : message });
     }
   });
 
